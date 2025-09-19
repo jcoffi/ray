@@ -395,18 +395,20 @@ elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
 
 
 elif [ "$NODETYPE" = "user" ]; then
-  node_master='-Cnode.master=false \\'
-  node_data='-Cnode.data=false \\'
-  node_voting_only='-Cnode.voting_only=false \\'
+  #these should be reenabled again once i have a few more cluster nodes 19/9/2025
+  #node_master='-Cnode.master=false \\'
+  #node_data='-Cnode.data=false \\'
+  #node_voting_only='-Cnode.voting_only=false \\'
   discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
 
   #todo: https://docs.ray.io/en/latest/ray-core/using-ray-with-jupyter.html#setting-up-notebook
 
-  sudo tailscale funnel --bg https+insecure://localhost:8888
-  #sudo tailscale funnel --bg --https 443 https+insecure://localhost:4200
+  #sudo tailscale funnel --bg https+insecure://localhost:8888
+  #enabled crate locally so that OpenHands can access it easier. Assuming that opening the ports in the container and in tailscale doesn't exclude it from tailscale
+  sudo tailscale funnel --bg --https 443 https+insecure://localhost:4200
   #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
 
-  ray start --address='nexus.chimp-beta.ts.net:6379' --num-cpus=0 --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net &
+  ray start --address='nexus.chimp-beta.ts.net:6379' --num-cpus=1 --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net &
 
   if [ -e "/files" ]; then
     sudo chgrp -R crate /files
@@ -419,10 +421,11 @@ elif [ "$NODETYPE" = "user" ]; then
   conda config --set pip_interop_enabled true
   conda config --append channels rapidsai
   conda config --append channels conda-forge
-  export JUPYTERLAB_SETTINGS_DIR='/data/.jupyter/lab/user-settings/'
-  export JUPYTERLAB_WORKSPACES_DIR='/data/.jupyter/lab/workspaces/'
-  conda install --strict-channel-priority -y ipympl 'ipywidgets>=8' jupyterlab 'cudf=24.12' libta-lib nodejs nano ta-lib
-  jupyter-lab --allow-root --IdentityProvider.token='' --ServerApp.password='' --notebook-dir /files --ip 0.0.0.0 --no-browser --certfile=/data/certs/${HOSTNAME,,}.chimp-beta.ts.net.crt --keyfile=/data/certs/${HOSTNAME,,}.chimp-beta.ts.net.key --preferred-dir /files &
+  #using OpenHands instead of Jupyter Notebooks. So disabled all of the jupyter stuff
+  #export JUPYTERLAB_SETTINGS_DIR='/data/.jupyter/lab/user-settings/'
+  #export JUPYTERLAB_WORKSPACES_DIR='/data/.jupyter/lab/workspaces/'
+  #conda install --strict-channel-priority -y ipympl 'ipywidgets>=8' jupyterlab 'cudf=24.12' libta-lib nodejs nano ta-lib
+  #jupyter-lab --allow-root --IdentityProvider.token='' --ServerApp.password='' --notebook-dir /files --ip 0.0.0.0 --no-browser --certfile=/data/certs/${HOSTNAME,,}.chimp-beta.ts.net.crt --keyfile=/data/certs/${HOSTNAME,,}.chimp-beta.ts.net.key --preferred-dir /files &
   #look into using /lab or /admin or whatever so that they can live on the same port (on the head node perhaps)
   #but we can't move it to the head node right now because the only other port is 10001 and that conflicts with ray
   #eventually we can make the below lines available to all nodetypes for cluster health checks. but first we need to configured the instances to connect was a password when connecting remotely.
