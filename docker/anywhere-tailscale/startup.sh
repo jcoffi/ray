@@ -405,7 +405,7 @@ elif [ "$NODETYPE" = "user" ]; then
 
   #sudo tailscale funnel --bg https+insecure://localhost:8888
   #enabled crate locally so that OpenHands can access it easier. Assuming that opening the ports in the container and in tailscale doesn't exclude it from tailscale
-  sudo tailscale funnel --bg --https 443 https+insecure://localhost:4200
+  sudo tailscale funnel --bg --tcp 4200 https+insecure://localhost:4200
   #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
 
   ray start --address='nexus.chimp-beta.ts.net:6379' --num-cpus=1 --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net &
