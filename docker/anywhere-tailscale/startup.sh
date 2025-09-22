@@ -369,6 +369,7 @@ if [ "$NODETYPE" = "head" ]; then
 
   sudo tailscale funnel --bg --https 443 http://localhost:8265
   #sudo tailscale funnel --bg --tcp 8443 tcp://localhost:6379
+  sudo tailscale funnel --bg --tcp 10001 tcp://localhost:10001
   #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
 
 
