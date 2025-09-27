@@ -397,9 +397,9 @@ elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
 
 elif [ "$NODETYPE" = "user" ]; then
   #these should be reenabled again once i have a few more cluster nodes 19/9/2025
-  #node_master='-Cnode.master=false \\'
-  #node_data='-Cnode.data=false \\'
-  #node_voting_only='-Cnode.voting_only=false \\'
+  node_master='-Cnode.master=false \\'
+  node_data='-Cnode.data=false \\'
+  node_voting_only='-Cnode.voting_only=false \\'
   discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
 
   #todo: https://docs.ray.io/en/latest/ray-core/using-ray-with-jupyter.html#setting-up-notebook
