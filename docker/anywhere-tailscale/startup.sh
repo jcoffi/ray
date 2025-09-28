@@ -367,9 +367,9 @@ if [ "$NODETYPE" = "head" ]; then
 
   ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
 
-  sudo tailscale funnel --bg --https 443 http://localhost:8265
-  sudo tailscale funnel --bg --tcp 6379 tcp://localhost:6379
-  sudo tailscale funnel --bg --tcp 10001 tcp://localhost:10001
+  #sudo tailscale funnel --bg --https 443 http://localhost:8265
+  #sudo tailscale funnel --bg --tcp 6379 tcp://localhost:6379
+  sudo tailscale funnel --bg https+insecure://localhost:10001
   #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
 
 
