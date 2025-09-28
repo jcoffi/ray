@@ -367,9 +367,9 @@ if [ "$NODETYPE" = "head" ]; then
 
   ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
 
-  sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
+  #sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
   #sudo tailscale funnel --bg --tcp 6379 tcp://localhost:6379
-  #sudo tailscale funnel --bg https+insecure://localhost:10001
+  #sudo tailscale funnel --bg --tcp 10001 tcp://$HOSTNAME.chimp-beta.ts.net:10001
   #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
 
 
@@ -387,7 +387,7 @@ if [ "$NODETYPE" = "head" ]; then
 
 elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
   node_master='-Cnode.master=false \\'
-  node_data='-Cnode.data=false \\'
+  node_data='-Cnode.data=true \\'
   node_voting_only='-Cnode.voting_only=false \\'
   discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
 
@@ -398,7 +398,7 @@ elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
 elif [ "$NODETYPE" = "user" ]; then
   #these should be reenabled again once i have a few more cluster nodes 19/9/2025
   node_master='-Cnode.master=false \\'
-  node_data='-Cnode.data=false \\'
+  node_data='-Cnode.data=true \\'
   node_voting_only='-Cnode.voting_only=false \\'
   discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
 
