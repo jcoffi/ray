@@ -6,7 +6,7 @@ import pyarrow as pa
 import pytest
 from packaging.version import parse as parse_version
 
-from ray._private.utils import _get_pyarrow_version
+from ray._private.arrow_utils import get_pyarrow_version
 from ray.air.util.tensor_extensions.arrow import (
     ArrowConversionError,
     ArrowTensorArray,
@@ -517,7 +517,7 @@ def test_arrow_tensor_array_getitem(chunked, restore_data_context, tensor_format
     if chunked:
         t_arr = pa.chunked_array(t_arr)
 
-    pyarrow_version = parse_version(_get_pyarrow_version())
+    pyarrow_version = get_pyarrow_version()
     if (
         chunked
         and pyarrow_version >= parse_version("8.0.0")
@@ -589,7 +589,7 @@ def test_arrow_variable_shaped_tensor_array_getitem(
     if chunked:
         t_arr = pa.chunked_array(t_arr)
 
-    pyarrow_version = parse_version(_get_pyarrow_version())
+    pyarrow_version = get_pyarrow_version()
     if (
         chunked
         and pyarrow_version >= parse_version("8.0.0")
@@ -798,6 +798,34 @@ def test_large_arrow_tensor_array(restore_data_context, tensor_format):
         assert len(ta) == 4000
         for arr in ta:
             assert np.asarray(arr).shape == (1000, 550)
+
+
+@pytest.mark.parametrize("tensor_format", ["v1", "v2"])
+def test_tensor_array_string_tensors_simple(restore_data_context, tensor_format):
+    """Simple test for fixed-shape string tensor arrays with pandas/arrow roundtrip."""
+    DataContext.get_current().use_arrow_tensor_v2 = tensor_format == "v2"
+
+    # Create fixed-shape string tensor
+    string_tensors = np.array(
+        [["hello", "world"], ["arrow", "pandas"], ["tensor", "string"]]
+    )
+
+    # Create pandas DataFrame with TensorArray
+    df_pandas = pd.DataFrame({"id": [1, 2, 3], "strings": TensorArray(string_tensors)})
+    # Convert to Arrow table
+    arrow_table = pa.Table.from_pandas(df_pandas)
+
+    # Convert back to pandas. Beginning v19+ pyarrow will handle
+    # extension types correctly
+    ignore_metadata = get_pyarrow_version() < parse_version("19.0.0")
+    df_roundtrip = arrow_table.to_pandas(ignore_metadata=ignore_metadata)
+
+    # Verify the roundtrip preserves the data
+    original_strings = df_pandas["strings"].to_numpy()
+    roundtrip_strings = df_roundtrip["strings"].to_numpy()
+
+    np.testing.assert_array_equal(original_strings, roundtrip_strings)
+    np.testing.assert_array_equal(roundtrip_strings, string_tensors)
 
 
 if __name__ == "__main__":

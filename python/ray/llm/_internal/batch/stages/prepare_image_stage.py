@@ -1,24 +1,25 @@
 """Prepare Image Stage"""
-import requests
-import aiohttp
 import asyncio
 import base64
-import logging
 import importlib
-from urllib.parse import urlparse
-from pathlib import Path
+import logging
 from io import BytesIO
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
-    Dict,
     AsyncIterator,
+    Dict,
     List,
-    Union,
-    Optional,
-    MutableMapping,
     Mapping,
+    MutableMapping,
+    Optional,
+    Union,
 )
+from urllib.parse import urlparse
+
+import aiohttp
+import requests
 
 from ray.llm._internal.batch.stages.base import (
     StatefulStage,
@@ -304,8 +305,8 @@ class ImageProcessor:
 
 
 class PrepareImageUDF(StatefulStageUDF):
-    def __init__(self, data_column: str):
-        super().__init__(data_column)
+    def __init__(self, data_column: str, expected_input_keys: List[str]):
+        super().__init__(data_column, expected_input_keys)
         self.Image = importlib.import_module("PIL.Image")
         self.image_processor = ImageProcessor()
 
@@ -321,12 +322,21 @@ class PrepareImageUDF(StatefulStageUDF):
 
         image_info: List[_ImageType] = []
         for message in messages:
-            if not isinstance(message["content"], list):
+            content = message["content"]
+
+            # Convert PyArrow objects to Python objects if needed (like ChatTemplateStage).
+            # This handles the case where unform content types are serialized with PyArrow
+            # instead of pickle- happens when all messages have the same content structure
+            # (e.g., no system prompt + string content mixed with user messages with list content).
+            if hasattr(content, "tolist"):
+                content = content.tolist()
+
+            if not isinstance(content, list):
                 continue
-            for content in message["content"]:
-                if content["type"] not in ("image", "image_url"):
+            for content_item in content:
+                if content_item["type"] not in ("image", "image_url"):
                     continue
-                image = content[content["type"]]
+                image = content_item[content_item["type"]]
                 if not isinstance(image, str) and not isinstance(
                     image, self.Image.Image
                 ):
@@ -365,17 +375,16 @@ class PrepareImageUDF(StatefulStageUDF):
                 img_start_idx += num_images_in_req
             yield ret
 
-    @property
-    def expected_input_keys(self) -> List[str]:
-        """The expected input keys."""
-        return ["messages"]
-
 
 class PrepareImageStage(StatefulStage):
     """A stage to prepare images from OpenAI chat template messages."""
 
     fn: StatefulStageUDF = PrepareImageUDF
-    fn_constructor_kwargs: Dict[str, Any]
-    map_batches_kwargs: Dict[str, Any] = dict(
-        concurrency=1,
-    )
+
+    def get_required_input_keys(self) -> Dict[str, str]:
+        """The required input keys of the stage and their descriptions."""
+        return {
+            "messages": "A list of messages in OpenAI chat format. "
+            "See https://platform.openai.com/docs/api-reference/chat/create "
+            "for details."
+        }

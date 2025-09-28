@@ -1,12 +1,14 @@
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from ray.data import Dataset
 from ray.data.aggregate import AbsMax, Max, Mean, Min, Std
 from ray.data.preprocessor import Preprocessor
 from ray.util.annotations import PublicAPI
+
+if TYPE_CHECKING:
+    from ray.data.dataset import Dataset
 
 
 @PublicAPI(stability="alpha")
@@ -80,11 +82,11 @@ class StandardScaler(Preprocessor):
 
     def __init__(self, columns: List[str], output_columns: Optional[List[str]] = None):
         self.columns = columns
-        self.output_columns = _derive_and_validate_output_columns(
+        self.output_columns = Preprocessor._derive_and_validate_output_columns(
             columns, output_columns
         )
 
-    def _fit(self, dataset: Dataset) -> Preprocessor:
+    def _fit(self, dataset: "Dataset") -> Preprocessor:
         mean_aggregates = [Mean(col) for col in self.columns]
         std_aggregates = [Std(col, ddof=0) for col in self.columns]
         self.stats_ = dataset.aggregate(*mean_aggregates, *std_aggregates)
@@ -94,6 +96,10 @@ class StandardScaler(Preprocessor):
         def column_standard_scaler(s: pd.Series):
             s_mean = self.stats_[f"mean({s.name})"]
             s_std = self.stats_[f"std({s.name})"]
+
+            if s_std is None or s_mean is None:
+                s[:] = np.nan
+                return s
 
             # Handle division by zero.
             # TODO: extend this to handle near-zero values.
@@ -176,11 +182,11 @@ class MinMaxScaler(Preprocessor):
 
     def __init__(self, columns: List[str], output_columns: Optional[List[str]] = None):
         self.columns = columns
-        self.output_columns = self.output_columns = _derive_and_validate_output_columns(
+        self.output_columns = Preprocessor._derive_and_validate_output_columns(
             columns, output_columns
         )
 
-    def _fit(self, dataset: Dataset) -> Preprocessor:
+    def _fit(self, dataset: "Dataset") -> Preprocessor:
         aggregates = [Agg(col) for Agg in [Min, Max] for col in self.columns]
         self.stats_ = dataset.aggregate(*aggregates)
         return self
@@ -268,11 +274,11 @@ class MaxAbsScaler(Preprocessor):
 
     def __init__(self, columns: List[str], output_columns: Optional[List[str]] = None):
         self.columns = columns
-        self.output_columns = _derive_and_validate_output_columns(
+        self.output_columns = Preprocessor._derive_and_validate_output_columns(
             columns, output_columns
         )
 
-    def _fit(self, dataset: Dataset) -> Preprocessor:
+    def _fit(self, dataset: "Dataset") -> Preprocessor:
         aggregates = [AbsMax(col) for col in self.columns]
         self.stats_ = dataset.aggregate(*aggregates)
         return self
@@ -374,11 +380,11 @@ class RobustScaler(Preprocessor):
         self.columns = columns
         self.quantile_range = quantile_range
 
-        self.output_columns = _derive_and_validate_output_columns(
+        self.output_columns = Preprocessor._derive_and_validate_output_columns(
             columns, output_columns
         )
 
-    def _fit(self, dataset: Dataset) -> Preprocessor:
+    def _fit(self, dataset: "Dataset") -> Preprocessor:
         low = self.quantile_range[0]
         med = 0.50
         high = self.quantile_range[1]
@@ -399,7 +405,7 @@ class RobustScaler(Preprocessor):
             sorted_dataset = filtered_dataset.sort(col)
             _, low, med, high = sorted_dataset.split_at_indices(split_indices)
 
-            def _get_first_value(ds: Dataset, c: str):
+            def _get_first_value(ds: "Dataset", c: str):
                 return ds.take(1)[0][c]
 
             low_val = _get_first_value(low, col)
@@ -435,20 +441,3 @@ class RobustScaler(Preprocessor):
             f"quantile_range={self.quantile_range!r}), "
             f"output_columns={self.output_columns!r})"
         )
-
-
-def _derive_and_validate_output_columns(
-    columns: List[str], output_columns: Optional[List[str]]
-) -> List[str]:
-    """
-    Returns the output columns, checking if they are explicitely set, otherwise defaulting to
-    the input columns. Throws an error when the length of the output columns does not match the
-    length of the input columns.
-    """
-
-    if output_columns and len(columns) != len(output_columns):
-        raise ValueError(
-            "Invalid output_columns: Got len(columns) != len(output_columns)."
-            "The length of columns and output_columns must match."
-        )
-    return output_columns or columns

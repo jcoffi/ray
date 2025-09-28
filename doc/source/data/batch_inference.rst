@@ -12,6 +12,9 @@ Offline batch inference is a process for generating model predictions on a fixed
    :width: 650px
    :align: center
 
+.. note::
+    This guide is primarily focused on batch inference with deep learning frameworks.
+    For more information on batch inference with LLMs, see :ref:`Working with LLMs <working-with-llms>`.
 
 .. _batch_inference_quickstart:
 
@@ -52,7 +55,7 @@ For how to configure batch inference, see :ref:`the configuration guide<batch_in
 
             # Step 2: Define a Predictor class for inference.
             # Use a class to initialize the model just once in `__init__`
-            # and re-use it for inference across multiple batches.
+            # and reuse it for inference across multiple batches.
             class HuggingFacePredictor:
                 def __init__(self):
                     from transformers import pipeline
@@ -102,7 +105,7 @@ For how to configure batch inference, see :ref:`the configuration guide<batch_in
 
             # Step 2: Define a Predictor class for inference.
             # Use a class to initialize the model just once in `__init__`
-            # and re-use it for inference across multiple batches.
+            # and reuse it for inference across multiple batches.
             class TorchPredictor:
                 def __init__(self):
                     # Load a dummy neural network.
@@ -149,7 +152,7 @@ For how to configure batch inference, see :ref:`the configuration guide<batch_in
 
             # Step 2: Define a Predictor class for inference.
             # Use a class to initialize the model just once in `__init__`
-            # and re-use it for inference across multiple batches.
+            # and reuse it for inference across multiple batches.
             class TFPredictor:
                 def __init__(self):
                     from tensorflow import keras
@@ -176,6 +179,55 @@ For how to configure batch inference, see :ref:`the configuration guide<batch_in
             :options: +MOCK
 
             {'output': array([0.625576], dtype=float32)}
+
+    .. tab-item:: LLM Inference
+        :sync: vLLM
+
+        Ray Data offers native integration with vLLM, a high-performance inference engine for large language models (LLMs).
+
+        .. testcode::
+            :skipif: True
+
+            import ray
+            from ray.data.llm import vLLMEngineProcessorConfig, build_llm_processor
+            import numpy as np
+
+            config = vLLMEngineProcessorConfig(
+                model="unsloth/Llama-3.1-8B-Instruct",
+                engine_kwargs={
+                    "enable_chunked_prefill": True,
+                    "max_num_batched_tokens": 4096,
+                    "max_model_len": 16384,
+                },
+                concurrency=1,
+                batch_size=64,
+            )
+            processor = build_llm_processor(
+                config,
+                preprocess=lambda row: dict(
+                    messages=[
+                        {"role": "system", "content": "You are a bot that responds with haikus."},
+                        {"role": "user", "content": row["item"]}
+                    ],
+                    sampling_params=dict(
+                        temperature=0.3,
+                        max_tokens=250,
+                    )
+                ),
+                postprocess=lambda row: dict(
+                    answer=row["generated_text"]
+                ),
+            )
+
+            ds = ray.data.from_items(["Start of the haiku is: Complete this for me..."])
+
+            ds = processor(ds)
+            ds.show(limit=1)
+
+        .. testoutput::
+            :options: +MOCK
+
+            {'answer': 'Snowflakes gently fall\nBlanketing the winter scene\nFrozen peaceful hush'}
 
 .. _batch_inference_configuration:
 

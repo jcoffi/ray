@@ -1,9 +1,10 @@
 import logging
-from typing import Any, Dict, List, Optional
 import threading
+from typing import Any, Dict, List, Optional
 
 import ray._private.worker
 from ray._private.client_mode_hook import client_mode_hook
+from ray._private.state import actors
 from ray._private.utils import parse_pg_formatted_resources_to_original
 from ray._raylet import TaskID
 from ray.runtime_env import RuntimeEnv
@@ -72,9 +73,9 @@ class RuntimeContext(object):
             AssertionError: If not called in a driver or worker. Generally,
                 this means that ray.init() was not called.
         """
-        assert ray.is_initialized(), (
-            "Job ID is not available because " "Ray has not been initialized."
-        )
+        assert (
+            ray.is_initialized()
+        ), "Job ID is not available because Ray has not been initialized."
         job_id = self.worker.current_job_id
         return job_id.hex()
 
@@ -105,9 +106,9 @@ class RuntimeContext(object):
             AssertionError: If not called in a driver or worker. Generally,
                 this means that ray.init() was not called.
         """
-        assert ray.is_initialized(), (
-            "Node ID is not available because " "Ray has not been initialized."
-        )
+        assert (
+            ray.is_initialized()
+        ), "Node ID is not available because Ray has not been initialized."
         node_id = self.worker.current_node_id
         return node_id.hex()
 
@@ -405,7 +406,7 @@ class RuntimeContext(object):
         assert (
             not self.actor_id.is_nil()
         ), "This method should't be called inside Ray tasks."
-        actor_info = ray._private.state.actors(self.actor_id.hex())
+        actor_info = actors(actor_id=self.actor_id.hex())
         return actor_info and actor_info["NumRestarts"] != 0
 
     @property
@@ -501,6 +502,7 @@ class RuntimeContext(object):
     @property
     def gcs_address(self):
         """Get the GCS address of the ray cluster.
+
         Returns:
             The GCS address of the cluster.
         """
@@ -533,6 +535,18 @@ class RuntimeContext(object):
             ids_dict[accelerator_resource_name] = [str(id) for id in accelerator_ids]
         return ids_dict
 
+    def get_node_labels(self) -> Dict[str, List[str]]:
+        """
+        Get the node labels of the current worker.
+
+        Returns:
+            A dictionary of label key-value pairs.
+        """
+        worker = self.worker
+        worker.check_connected()
+
+        return worker.current_node_labels
+
 
 _runtime_context = None
 _runtime_context_lock = threading.Lock()
@@ -545,6 +559,10 @@ def get_runtime_context() -> RuntimeContext:
 
     The obtained runtime context can be used to get the metadata
     of the current task and actor.
+
+    Note: For Ray Client, ray.get_runtime_context().get_node_id() should
+    point to the head node. Also, keep in mind that ray._private.worker.global_worker
+    will create a new worker object here if global_worker doesn't point to one.
 
     Example:
 

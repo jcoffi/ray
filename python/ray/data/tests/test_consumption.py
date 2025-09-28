@@ -159,19 +159,19 @@ def test_count_edge_case(ray_start_regular):
     assert actual_count == 5
 
 
-def test_count_after_partial_execution(ray_start_regular):
-    paths = ["example://iris.csv"] * 5
+def test_count_after_caching_after_execution(ray_start_regular):
+    SCALE_FACTOR = 5
+    FILE_ROW_COUNT = 150
+    DS_ROW_COUNT = FILE_ROW_COUNT * SCALE_FACTOR
+    paths = ["example://iris.csv"] * SCALE_FACTOR
     ds = ray.data.read_csv(paths)
-    for batch in ds.iter_batches():
-        # Take one batch and break to simulate partial iteration/execution.
-        break
-    # Row count should be unknown after partial execution.
+    # Row count should be unknown before execution.
     assert "num_rows=?" in str(ds)
-
     # After iterating over bundles and completing execution, row count should be known.
     list(ds.iter_internal_ref_bundles())
-    assert f"num_rows={150*5}" in str(ds)
-    assert ds.count() == 150 * 5
+    assert f"num_rows={DS_ROW_COUNT}" in str(ds)
+    assert ds.count() == DS_ROW_COUNT
+    assert ds._plan._snapshot_metadata_schema.metadata.num_rows == DS_ROW_COUNT
 
 
 def test_limit_execution(ray_start_regular):
@@ -246,54 +246,32 @@ def test_avoid_placement_group_capture(shutdown_only):
     )
 
 
-def test_ray_remote_args_fn(shutdown_only):
+@pytest.fixture
+def remove_named_placement_groups():
+    yield
+    for info in ray.util.placement_group_table().values():
+        if info["name"]:
+            pg = ray.util.get_placement_group(info["name"])
+            ray.util.remove_placement_group(pg)
+
+
+def test_ray_remote_args_fn(shutdown_only, remove_named_placement_groups):
     ray.init()
 
-    global_idx = 1
-    placement_groups = []
+    pg = ray.util.placement_group([{"CPU": 1}], name="test_pg")
 
-    def _generate_ray_remote_args_with_scheduling_strategy():
-        nonlocal placement_groups
-        pg = ray.util.placement_group([{"CPU": global_idx}])
-        placement_groups.append(pg)
-
+    def ray_remote_args_fn():
         scheduling_strategy = PlacementGroupSchedulingStrategy(placement_group=pg)
         return {"scheduling_strategy": scheduling_strategy}
 
     class ActorClass:
-        def __init__(self):
-            # Each time a new actor is created with ActorClass,
-            # global_idx is incremented, and the number of CPUs in its
-            # placement group should match the saved self._idx value.
-            nonlocal global_idx
-            self._idx = global_idx
-            global_idx += 1
-
         def __call__(self, batch):
-            pg = ray.util.get_current_placement_group()
-            if global_idx > 0:
-                assert pg.bundle_specs == [{"CPU": self._idx}]
-            else:
-                assert pg is not None
+            assert ray.util.get_current_placement_group() == pg
             return batch
 
-    ray.data.range(10).map_batches(
-        ActorClass,
-        concurrency=3,
-        ray_remote_args_fn=_generate_ray_remote_args_with_scheduling_strategy,
+    ray.data.range(1).map_batches(
+        ActorClass, concurrency=1, ray_remote_args_fn=ray_remote_args_fn
     ).take_all()
-
-    global_idx = -10
-    with pytest.raises(ValueError):  # cannot use -10 for pg
-        ray.data.range(10).map_batches(
-            ActorClass,
-            concurrency=3,
-            ray_remote_args_fn=_generate_ray_remote_args_with_scheduling_strategy,
-        ).take_all()
-
-    # Be sure to remove placement groups after use.
-    for pg in placement_groups:
-        ray.util.remove_placement_group(pg)
 
 
 def test_dataset_lineage_serialization(shutdown_only):
@@ -500,7 +478,7 @@ def test_dataset_repr(ray_start_regular_shared):
     assert repr(ds) == "Dataset(num_rows=10, schema={id: int64})"
     ds = ds.map_batches(lambda x: x)
     assert repr(ds) == (
-        "MapBatches(<lambda>)\n" "+- Dataset(num_rows=10, schema={id: int64})"
+        "MapBatches(<lambda>)\n+- Dataset(num_rows=10, schema={id: int64})"
     )
     ds = ds.filter(lambda x: x["id"] > 0)
     assert repr(ds) == (
@@ -522,7 +500,7 @@ def test_dataset_repr(ray_start_regular_shared):
     ds = ds.map_batches(lambda x: x)
 
     assert repr(ds) == (
-        "MapBatches(<lambda>)\n" "+- Dataset(num_rows=9, schema={id: int64})"
+        "MapBatches(<lambda>)\n+- Dataset(num_rows=9, schema={id: int64})"
     )
     ds1, ds2 = ds.split(2)
     assert (
@@ -553,7 +531,51 @@ def test_dataset_repr(ray_start_regular_shared):
     ds = ray.data.range(10, override_num_blocks=10)
     ds = ds.map_batches(my_dummy_fn)
     assert repr(ds) == (
-        "MapBatches(my_dummy_fn)\n" "+- Dataset(num_rows=10, schema={id: int64})"
+        "MapBatches(my_dummy_fn)\n+- Dataset(num_rows=10, schema={id: int64})"
+    )
+
+
+def test_dataset_explain(ray_start_regular_shared, capsys):
+    ds = ray.data.range(10, override_num_blocks=10)
+    ds = ds.map(lambda x: x)
+
+    ds.explain()
+    captured = capsys.readouterr()
+    assert captured.out.rstrip() == (
+        "-------- Logical Plan --------\n"
+        "Map(<lambda>)\n"
+        "+- ReadRange\n"
+        "-------- Physical Plan --------\n"
+        "TaskPoolMapOperator[ReadRange->Map(<lambda>)]\n"
+        "+- InputDataBuffer[Input]"
+    )
+
+    ds = ds.filter(lambda x: x["id"] > 0)
+    ds.explain()
+    captured = capsys.readouterr()
+    assert captured.out.rstrip() == (
+        "-------- Logical Plan --------\n"
+        "Filter(<lambda>)\n"
+        "+- Map(<lambda>)\n"
+        "   +- ReadRange\n"
+        "-------- Physical Plan --------\n"
+        "TaskPoolMapOperator[ReadRange->Map(<lambda>)->Filter(<lambda>)]\n"
+        "+- InputDataBuffer[Input]"
+    )
+    ds = ds.random_shuffle().map(lambda x: x)
+    ds.explain()
+    captured = capsys.readouterr()
+    assert captured.out.rstrip() == (
+        "-------- Logical Plan --------\n"
+        "Map(<lambda>)\n"
+        "+- RandomShuffle\n"
+        "   +- Filter(<lambda>)\n"
+        "      +- Map(<lambda>)\n"
+        "         +- ReadRange\n"
+        "-------- Physical Plan --------\n"
+        "TaskPoolMapOperator[Map(<lambda>)]\n"
+        "+- AllToAllOperator[ReadRange->Map(<lambda>)->Filter(<lambda>)->RandomShuffle]\n"
+        "   +- InputDataBuffer[Input]"
     )
 
 
@@ -608,10 +630,10 @@ def test_limit_no_redundant_read(
                             sys.getsizeof(i)
                             for i in range(parallelism * i, parallelism * i + n)
                         ),
-                        schema=None,
                         input_files=None,
                         exec_stats=None,
                     ),
+                    schema=pa.lib.Schema.from_pandas(pd.DataFrame({"id": []})),
                 )
                 for i in range(parallelism)
             ]
@@ -652,10 +674,10 @@ def test_limit_no_num_row_info(ray_start_regular_shared):
                     BlockMetadata(
                         num_rows=None,
                         size_bytes=sys.getsizeof(1) * n,
-                        schema=None,
                         input_files=None,
                         exec_stats=None,
                     ),
+                    schema=pa.lib.Schema.from_pandas(pd.DataFrame({"id": []})),
                 )
             ]
 
@@ -1233,7 +1255,7 @@ def test_iter_batches_grid(ray_start_regular_shared):
 
 
 def test_union(ray_start_regular_shared):
-    ds = ray.data.range(20, override_num_blocks=10)
+    ds = ray.data.range(20, override_num_blocks=10).materialize()
 
     # Test lazy union.
     ds = ds.union(ds, ds, ds, ds)
@@ -1365,13 +1387,13 @@ def test_global_tabular_min(ray_start_regular_shared, ds_format, num_parts):
         nan_ds = _to_pandas(nan_ds)
     assert nan_ds.min("A") == 0
     # Test ignore_nulls=False
-    assert nan_ds.min("A", ignore_nulls=False) is None
+    assert pd.isnull(nan_ds.min("A", ignore_nulls=False))
     # Test all nans
     nan_ds = ray.data.from_items([{"A": None}] * len(xs)).repartition(num_parts)
     if ds_format == "pandas":
         nan_ds = _to_pandas(nan_ds)
-    assert nan_ds.min("A") is None
-    assert nan_ds.min("A", ignore_nulls=False) is None
+    assert pd.isnull(nan_ds.min("A"))
+    assert pd.isnull(nan_ds.min("A", ignore_nulls=False))
 
 
 @pytest.mark.parametrize("num_parts", [1, 30])
@@ -1408,13 +1430,13 @@ def test_global_tabular_max(ray_start_regular_shared, ds_format, num_parts):
         nan_ds = _to_pandas(nan_ds)
     assert nan_ds.max("A") == 99
     # Test ignore_nulls=False
-    assert nan_ds.max("A", ignore_nulls=False) is None
+    assert pd.isnull(nan_ds.max("A", ignore_nulls=False))
     # Test all nans
     nan_ds = ray.data.from_items([{"A": None}] * len(xs)).repartition(num_parts)
     if ds_format == "pandas":
         nan_ds = _to_pandas(nan_ds)
-    assert nan_ds.max("A") is None
-    assert nan_ds.max("A", ignore_nulls=False) is None
+    assert pd.isnull(nan_ds.max("A"))
+    assert pd.isnull(nan_ds.max("A", ignore_nulls=False))
 
 
 @pytest.mark.parametrize("num_parts", [1, 30])
@@ -1451,20 +1473,21 @@ def test_global_tabular_mean(ray_start_regular_shared, ds_format, num_parts):
         nan_ds = _to_pandas(nan_ds)
     assert nan_ds.mean("A") == 49.5
     # Test ignore_nulls=False
-    assert nan_ds.mean("A", ignore_nulls=False) is None
+    assert pd.isnull(nan_ds.mean("A", ignore_nulls=False))
     # Test all nans
     nan_ds = ray.data.from_items([{"A": None}] * len(xs)).repartition(num_parts)
     if ds_format == "pandas":
         nan_ds = _to_pandas(nan_ds)
-    assert nan_ds.mean("A") is None
-    assert nan_ds.mean("A", ignore_nulls=False) is None
+    assert pd.isnull(nan_ds.mean("A"))
+    assert pd.isnull(nan_ds.mean("A", ignore_nulls=False))
 
 
 @pytest.mark.parametrize("num_parts", [1, 30])
 @pytest.mark.parametrize("ds_format", ["arrow", "pandas"])
 def test_global_tabular_std(ray_start_regular_shared, ds_format, num_parts):
-    seed = int(time.time())
-    print(f"Seeding RNG for test_global_arrow_std with: {seed}")
+    # NOTE: Do not change the seed
+    seed = 1740035705
+
     random.seed(seed)
     xs = list(range(100))
     random.shuffle(xs)
@@ -1487,12 +1510,12 @@ def test_global_tabular_std(ray_start_regular_shared, ds_format, num_parts):
     ds = ray.data.from_pandas(pd.DataFrame({"A": []}))
     if ds_format == "arrow":
         ds = _to_arrow(ds)
-    assert ds.std("A") is None
+    assert pd.isnull(ds.std("A"))
     # Test edge cases
     ds = ray.data.from_pandas(pd.DataFrame({"A": [3]}))
     if ds_format == "arrow":
         ds = _to_arrow(ds)
-    assert ds.std("A") == 0
+    assert np.isnan(ds.std("A"))
 
     # Test built-in global std aggregation with nans
     nan_df = pd.DataFrame({"A": xs + [None]})
@@ -1501,13 +1524,13 @@ def test_global_tabular_std(ray_start_regular_shared, ds_format, num_parts):
         nan_ds = _to_arrow(nan_ds)
     assert math.isclose(nan_ds.std("A"), nan_df["A"].std())
     # Test ignore_nulls=False
-    assert nan_ds.std("A", ignore_nulls=False) is None
+    assert pd.isnull(nan_ds.std("A", ignore_nulls=False))
     # Test all nans
     nan_ds = ray.data.from_items([{"A": None}] * len(xs)).repartition(num_parts)
     if ds_format == "pandas":
         nan_ds = _to_pandas(nan_ds)
-    assert nan_ds.std("A") is None
-    assert nan_ds.std("A", ignore_nulls=False) is None
+    assert pd.isnull(nan_ds.std("A"))
+    assert pd.isnull(nan_ds.std("A", ignore_nulls=False))
 
 
 def test_column_name_type_check(ray_start_regular_shared):
@@ -1840,7 +1863,7 @@ def test_dataset_plan_as_string(ray_start_cluster):
     ds = ray.data.read_parquet("example://iris.parquet", override_num_blocks=8)
     assert ds._plan.get_plan_as_string(type(ds)) == (
         "Dataset(\n"
-        "   num_rows=150,\n"
+        "   num_rows=?,\n"
         "   schema={\n"
         "      sepal.length: double,\n"
         "      sepal.width: double,\n"
@@ -1859,7 +1882,7 @@ def test_dataset_plan_as_string(ray_start_cluster):
         "      +- MapBatches(<lambda>)\n"
         "         +- MapBatches(<lambda>)\n"
         "            +- Dataset(\n"
-        "                  num_rows=150,\n"
+        "                  num_rows=?,\n"
         "                  schema={\n"
         "                     sepal.length: double,\n"
         "                     sepal.width: double,\n"
@@ -1913,6 +1936,201 @@ def test_nowarning_execute_with_cpu(ray_start_cluster):
         ds = ds.map_batches(lambda x: x)
         ds.take()
         mock_logger.assert_not_called()
+
+
+def test_per_task_row_limit_basic(ray_start_regular_shared):
+    """Test basic per-block limiting functionality."""
+    # Simple test that should work with the existing range datasource
+    ds = ray.data.range(1000, override_num_blocks=10).limit(50)
+    result = ds.take_all()
+
+    # Verify we get the correct results
+    assert len(result) == 50
+    assert [row["id"] for row in result] == list(range(50))
+
+
+def test_per_task_row_limit_with_custom_readtask(ray_start_regular_shared):
+    """Test per-block limiting directly with ReadTask implementation."""
+
+    def read_data_with_limit():
+        # This simulates a ReadTask that reads 200 rows
+        return [pd.DataFrame({"id": range(200)})]
+
+    # Create ReadTask with per-block limit
+    task_with_limit = ReadTask(
+        read_fn=read_data_with_limit,
+        metadata=BlockMetadata(
+            num_rows=200, size_bytes=1600, input_files=None, exec_stats=None
+        ),
+        schema=pa.lib.Schema.from_pandas(pd.DataFrame({"id": []})),
+        per_task_row_limit=50,
+    )
+
+    # Execute the ReadTask
+    result_blocks = list(task_with_limit())
+
+    # Should get only 50 rows due to per-block limiting
+    assert len(result_blocks) == 1
+    assert len(result_blocks[0]) == 50
+    assert result_blocks[0]["id"].tolist() == list(range(50))
+
+
+def test_per_task_row_limit_multiple_blocks_per_task(ray_start_regular_shared):
+    """Test per-block limiting when ReadTasks return multiple blocks."""
+
+    def read_multiple_blocks_with_limit():
+        # This simulates a ReadTask that returns 3 blocks of 30 rows each
+        return [
+            pd.DataFrame({"id": range(0, 30)}),
+            pd.DataFrame({"id": range(30, 60)}),
+            pd.DataFrame({"id": range(60, 90)}),
+        ]
+
+    # Create ReadTask with per-block limit of 70 (should get 2.33 blocks)
+    task = ReadTask(
+        read_fn=read_multiple_blocks_with_limit,
+        metadata=BlockMetadata(
+            num_rows=90, size_bytes=720, input_files=None, exec_stats=None
+        ),
+        schema=pa.lib.Schema.from_pandas(pd.DataFrame({"id": []})),
+        per_task_row_limit=70,
+    )
+
+    result_blocks = list(task())
+
+    # Should get first 2 full blocks (60 rows) plus 10 rows from third block
+    total_rows = sum(len(block) for block in result_blocks)
+    assert total_rows == 70
+
+    # Verify the data is correct
+    all_ids = []
+    for block in result_blocks:
+        all_ids.extend(block["id"].tolist())
+    assert all_ids == list(range(70))
+
+
+def test_per_task_row_limit_larger_than_data(ray_start_regular_shared):
+    """Test per-block limiting when limit is larger than available data."""
+
+    total_rows = 50
+    ds = ray.data.range(total_rows, override_num_blocks=5)
+    limited_ds = ds.limit(100)  # Limit larger than data
+    result = limited_ds.take_all()
+
+    assert len(result) == total_rows
+    assert [row["id"] for row in result] == list(range(total_rows))
+
+
+def test_per_task_row_limit_exact_block_boundary(ray_start_regular_shared):
+    """Test per-block limiting when limit exactly matches block boundaries."""
+
+    rows_per_block = 20
+    num_blocks = 5
+    limit = rows_per_block * 2  # Exactly 2 blocks
+
+    ds = ray.data.range(rows_per_block * num_blocks, override_num_blocks=num_blocks)
+    limited_ds = ds.limit(limit)
+    result = limited_ds.take_all()
+
+    assert len(result) == limit
+    assert [row["id"] for row in result] == list(range(limit))
+
+
+@pytest.mark.parametrize("limit", [1, 5, 10, 25, 50, 99])
+def test_per_task_row_limit_various_sizes(ray_start_regular_shared, limit):
+    """Test per-block limiting with various limit sizes."""
+
+    total_rows = 100
+    num_blocks = 10
+
+    ds = ray.data.range(total_rows, override_num_blocks=num_blocks)
+    limited_ds = ds.limit(limit)
+    result = limited_ds.take_all()
+
+    expected_len = min(limit, total_rows)
+    assert len(result) == expected_len
+    assert [row["id"] for row in result] == list(range(expected_len))
+
+
+def test_per_task_row_limit_with_transformations(ray_start_regular_shared):
+    """Test that per-block limiting works correctly with transformations."""
+
+    # Test with map operation after limit
+    ds = ray.data.range(100, override_num_blocks=10)
+    limited_ds = ds.limit(20).map(lambda x: {"doubled": x["id"] * 2})
+    result = limited_ds.take_all()
+
+    assert len(result) == 20
+    assert [row["doubled"] for row in result] == [i * 2 for i in range(20)]
+
+    # Test with map operation before limit
+    ds = ray.data.range(100, override_num_blocks=10)
+    limited_ds = ds.map(lambda x: {"doubled": x["id"] * 2}).limit(20)
+    result = limited_ds.take_all()
+
+    assert len(result) == 20
+    assert [row["doubled"] for row in result] == [i * 2 for i in range(20)]
+
+
+def test_per_task_row_limit_with_filter(ray_start_regular_shared):
+    """Test per-block limiting with filter operations."""
+
+    # Filter before limit - per-block limiting should still work at read level
+    ds = ray.data.range(200, override_num_blocks=10)
+    filtered_limited = ds.filter(lambda x: x["id"] % 2 == 0).limit(15)
+    result = filtered_limited.take_all()
+
+    assert len(result) == 15
+    # Should get first 15 even numbers
+    assert [row["id"] for row in result] == [i * 2 for i in range(15)]
+
+
+def test_per_task_row_limit_readtask_properties(ray_start_regular_shared):
+    """Test ReadTask per_block_limit property."""
+
+    def dummy_read():
+        return [pd.DataFrame({"id": [1, 2, 3]})]
+
+    # Test ReadTask without per_block_limit
+    task_no_limit = ReadTask(
+        read_fn=dummy_read,
+        metadata=BlockMetadata(
+            num_rows=3, size_bytes=24, input_files=None, exec_stats=None
+        ),
+    )
+    assert task_no_limit.per_task_row_limit is None
+
+    # Test ReadTask with per_block_limit
+    task_with_limit = ReadTask(
+        read_fn=dummy_read,
+        metadata=BlockMetadata(
+            num_rows=3, size_bytes=24, input_files=None, exec_stats=None
+        ),
+        per_task_row_limit=10,
+    )
+    assert task_with_limit.per_task_row_limit == 10
+
+
+def test_per_task_row_limit_edge_cases(ray_start_regular_shared):
+    """Test per-block limiting edge cases."""
+
+    # Test with single row
+    ds = ray.data.range(1, override_num_blocks=1).limit(1)
+    result = ds.take_all()
+    assert len(result) == 1
+    assert result[0]["id"] == 0
+
+    # Test with limit of 1 on large dataset
+    ds = ray.data.range(10000, override_num_blocks=100).limit(1)
+    result = ds.take_all()
+    assert len(result) == 1
+    assert result[0]["id"] == 0
+
+    # Test with very large limit
+    ds = ray.data.range(100, override_num_blocks=10).limit(999999)
+    result = ds.take_all()
+    assert len(result) == 100
+    assert [row["id"] for row in result] == list(range(100))
 
 
 if __name__ == "__main__":

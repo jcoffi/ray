@@ -7,9 +7,10 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar, Union
 
 import ray
 from ray._private.ray_constants import env_float
+from ray._private.state import state as ray_state
 from ray.actor import ActorHandle
 from ray.exceptions import GetTimeoutError, RayActorError
-from ray.train import Checkpoint
+from ray.runtime_env import RuntimeEnv
 from ray.train.v2._internal.constants import (
     DEFAULT_REPORT_BARRIER_TIMEOUT_S,
     DEFAULT_REPORT_BARRIER_WARN_INTERVAL_S,
@@ -22,6 +23,7 @@ from ray.train.v2._internal.constants import (
     get_env_vars_to_propagate,
 )
 from ray.train.v2._internal.exceptions import (
+    InsufficientClusterResourcesError,
     WorkerGroupStartupFailedError,
     WorkerGroupStartupTimeoutError,
     WorkerHealthCheckFailedError,
@@ -35,7 +37,6 @@ from ray.train.v2._internal.execution.callback import (
 from ray.train.v2._internal.execution.checkpoint.sync_actor import SynchronizationActor
 from ray.train.v2._internal.execution.context import (
     DistributedContext,
-    StorageContext,
     TrainRunContext,
 )
 from ray.train.v2._internal.execution.worker_group.poll import (
@@ -51,7 +52,9 @@ from ray.train.v2._internal.execution.worker_group.worker import (
     Worker,
     WorkerStatus,
 )
+from ray.train.v2._internal.logging.logging import get_train_application_worker_log_path
 from ray.train.v2._internal.util import (
+    ObjectRefWrapper,
     bundle_to_remote_args,
     invoke_context_managers,
     ray_get_safe,
@@ -80,21 +83,20 @@ class WorkerGroupContext:
     This stores the context that is shared when starting a worker group.
 
     Attributes:
-        train_fn: The training function to execute.
+        run_attempt_id: The ID of the run attempt.
+        train_fn_ref: An object store reference to the training function to execute.
         num_workers: The number of workers in the worker group.
         resources_per_worker: The resources per worker.
         placement_strategy: Strategy for placing workers.
-        checkpoint: Optional checkpoint to restore from.
+        bundle_label_selector: Optional label selectors to apply per-bundle for workers.
     """
 
-    train_fn: Callable[[], None]
+    run_attempt_id: str
+    train_fn_ref: ObjectRefWrapper[Callable[[], None]]
     num_workers: int
     resources_per_worker: Dict[str, float]
     placement_strategy: str = "PACK"
-    # TODO: Remove checkpoint from WorkerGroupContext
-    # and move it to CheckpointManager. Populate TrainContext
-    # similar to how the dataset shards are passed to the workers.
-    checkpoint: Optional[Checkpoint] = None
+    bundle_label_selector: Optional[Dict[str, str]] = None
 
 
 class WorkerGroup:
@@ -124,13 +126,14 @@ class WorkerGroup:
             WorkerGroupStartupFailedError: If worker group fails to start.
         """
 
-        worker_group = cls(train_run_context, callbacks)
-        worker_group._start(worker_group_context)
+        worker_group = cls(train_run_context, worker_group_context, callbacks)
+        worker_group._start()
         return worker_group
 
     def __init__(
         self,
         train_run_context: TrainRunContext,
+        worker_group_context: WorkerGroupContext,
         callbacks: Optional[
             List[Union[WorkerGroupCallback, WorkerCallback, TrainContextCallback]]
         ] = None,
@@ -141,11 +144,10 @@ class WorkerGroup:
         """
         self._train_run_context = train_run_context
         run_config = self._train_run_context.run_config
-        self._storage_context = StorageContext(
-            storage_path=run_config.storage_path,
-            experiment_dir_name=run_config.name,
-            storage_filesystem=run_config.storage_filesystem,
-        )
+        self._storage_context = run_config.storage_context
+
+        self._worker_group_context: WorkerGroupContext = worker_group_context
+
         callbacks = callbacks or []
         # Group of callbacks that are specific to worker group itself.
         self._callbacks = [c for c in callbacks if isinstance(c, WorkerGroupCallback)]
@@ -156,11 +158,10 @@ class WorkerGroup:
             if isinstance(c, (WorkerCallback, TrainContextCallback))
         ]
 
-        self._worker_group_context: Optional[WorkerGroupContext] = None
         self._worker_group_state: Optional[WorkerGroupState] = None
         # Maps world rank to the ongoing poll task.
         self._world_rank_to_ongoing_poll: Dict[int, PollTask] = {}
-
+        self._latest_poll_status: Optional[WorkerGroupPollStatus] = None
         # Environment variables
         self._worker_group_start_timeout_s = float(
             os.environ.get(
@@ -188,15 +189,14 @@ class WorkerGroup:
 
     def _start(
         self,
-        worker_group_context: WorkerGroupContext,
     ):
         """Internal method to start the worker group."""
+
         worker_group_state_builder = WorkerGroupStateBuilder()
 
         try:
             self._start_impl(
                 worker_group_state_builder,
-                worker_group_context,
             )
         except Exception as e:
             if not self.has_started():
@@ -206,16 +206,42 @@ class WorkerGroup:
 
         assert self.has_started(), "Worker group failed to start."
 
+    @staticmethod
+    def _check_cluster_resources_and_raise_if_insufficient(
+        resources_per_worker: Dict[str, float], num_workers: int
+    ) -> None:
+        """Check if the cluster has enough resources before waiting for placement group.
+
+        Args:
+            resources_per_worker: The resources per worker.
+            num_workers: The number of workers.
+        """
+        max_cluster_resources = ray_state.get_max_resources_from_cluster_config()
+        if not max_cluster_resources:
+            return
+
+        for (
+            resource_name,
+            required_amount,
+        ) in resources_per_worker.items():
+            total_required_amount = required_amount * num_workers
+            available_amount = max_cluster_resources.get(resource_name, 0)
+            if total_required_amount > available_amount:
+                error_msg = (
+                    "Insufficient cluster resources to launch training workers.\n"
+                    f'The worker group requires {{"{resource_name}": {total_required_amount}}} but the cluster only has a maximum of {{"{resource_name}": {available_amount}}} resources.\n'
+                    "Please reduce `num_workers`, lower resource requirements, or increase the cluster size."
+                )
+                raise InsufficientClusterResourcesError(error_msg)
+
     def _start_impl(
         self,
         worker_group_state_builder: WorkerGroupStateBuilder,
-        worker_group_context: WorkerGroupContext,
     ):
         """Implementation of worker group startup.
 
         Args:
             worker_group_state_builder: Builder for constructing worker group state.
-            worker_group_context: Context for the worker group.
 
         Raises:
             ValueError: If workers are already started.
@@ -223,6 +249,12 @@ class WorkerGroup:
             WorkerGroupStartupFailedError: If workers fail during initialization.
         """
         self._assert_inactive()
+        worker_group_context = self._worker_group_context
+
+        WorkerGroup._check_cluster_resources_and_raise_if_insufficient(
+            worker_group_context.resources_per_worker,
+            worker_group_context.num_workers,
+        )
 
         # TODO: Review the order of `on_xyz_start` and `after_xyz_start` callbacks.
         # The current execution order is as follows:`on_worker_group_start` callbacks
@@ -230,10 +262,21 @@ class WorkerGroup:
         with invoke_context_managers(
             [callback.on_worker_group_start for callback in self._callbacks]
         ):
+            for callback in self._callbacks:
+                callback.before_worker_group_start(worker_group_context)
+
+            bundle_label_selector = (
+                [worker_group_context.bundle_label_selector.copy()]
+                * worker_group_context.num_workers
+                if worker_group_context.bundle_label_selector
+                else None
+            )
+
             pg = placement_group(
                 bundles=[worker_group_context.resources_per_worker]
                 * worker_group_context.num_workers,
                 strategy=worker_group_context.placement_strategy,
+                bundle_label_selector=bundle_label_selector,
             )
             logger.info(
                 f"Attempting to start training worker group of size {worker_group_context.num_workers} with "
@@ -281,9 +324,7 @@ class WorkerGroup:
             # To prevent the driver from crashing, catch all `RayActorError`s and
             # raise a specially handled error to the controller.
             try:
-                train_context_args = {
-                    "checkpoint": [worker_group_context.checkpoint] * len(workers)
-                }
+                train_context_args = {}
                 for callable in self._callbacks:
                     args = callable.before_init_train_context(workers)
                     for arg, arg_values in args.items():
@@ -313,9 +354,22 @@ class WorkerGroup:
         # This task should start a worker thread and return immediately.
         ray_get_safe(
             [
-                worker.actor.run_train_fn.remote(worker_group_context.train_fn)
+                worker.actor.run_train_fn.remote(worker_group_context.train_fn_ref)
                 for worker in workers
             ]
+        )
+
+        workers_info = "\n".join(
+            [
+                f"- (ip={w.metadata.node_ip}, pid={w.metadata.pid}) "
+                f"world_rank={w.distributed_context.world_rank}, "
+                f"local_rank={w.distributed_context.local_rank}, "
+                f"node_rank={w.distributed_context.node_rank}"
+                for w in workers
+            ]
+        )
+        logger.info(
+            f"Started training worker group of size {len(workers)}: \n{workers_info}"
         )
 
         for callback in self._callbacks:
@@ -328,16 +382,19 @@ class WorkerGroup:
         resources_per_worker: Dict[str, float],
     ) -> List[Worker]:
 
-        worker_actor_cls = ray.remote(**bundle_to_remote_args(resources_per_worker))(
-            self._worker_cls
+        runtime_env = self._get_worker_runtime_env(
+            custom_runtime_env=self._train_run_context.run_config.worker_runtime_env
         )
+        worker_actor_cls = ray.remote(
+            runtime_env=runtime_env,
+            **bundle_to_remote_args(resources_per_worker),
+        )(self._worker_cls)
 
         actors = [
             worker_actor_cls.options(
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=placement_group, placement_group_bundle_index=i
                 ),
-                runtime_env={"env_vars": get_env_vars_to_propagate()},
             ).remote()
             for i in range(num_workers)
         ]
@@ -356,7 +413,10 @@ class WorkerGroup:
             )
             raise WorkerGroupStartupFailedError(error_msg) from actor_error
 
-        workers = [Worker(actor, meta) for actor, meta in zip(actors, actor_metadatas)]
+        workers = [
+            Worker(actor, meta, resources_per_worker)
+            for actor, meta in zip(actors, actor_metadatas)
+        ]
         return WorkerGroup._assign_worker_ranks(workers)
 
     def _init_train_context_on_workers(
@@ -372,6 +432,7 @@ class WorkerGroup:
                 synchronization_actor=sync_actor,
                 storage_context=self._storage_context,
                 worker_callbacks=self._worker_callbacks_to_propagate,
+                controller_actor=ray.get_runtime_context().current_actor,
                 **{
                     arg: arg_values[i] for arg, arg_values in train_context_args.items()
                 },
@@ -379,6 +440,8 @@ class WorkerGroup:
             for i, worker in enumerate(workers)
         ]
         ray_get_safe(context_init_tasks)
+
+        self._decorate_worker_log_file_paths(workers)
 
     #####################################################################################
     # Shutdown Worker Group
@@ -402,9 +465,19 @@ class WorkerGroup:
             logger.debug("Worker group shutdown successful.")
 
     def _clear_state(self):
-        self._worker_group_context = None
         self._worker_group_state = None
         self._world_rank_to_ongoing_poll = {}
+
+    def abort(self):
+        """Abort the worker group."""
+        self._assert_active()
+        for callback in self._callbacks:
+            callback.before_worker_group_abort(self._worker_group_context)
+
+        # TODO: Add shutdown callback hooks
+
+        self._worker_group_state.shutdown()
+        self._clear_state()
 
     #####################################################################################
     # Polling Worker Group
@@ -427,6 +500,7 @@ class WorkerGroup:
         for callback in self._callbacks:
             callback.after_worker_group_poll_status(worker_group_poll_status)
 
+        self._latest_poll_status = worker_group_poll_status
         return worker_group_poll_status
 
     def _poll_workers_and_collect_errors(
@@ -626,12 +700,15 @@ class WorkerGroup:
         return self._worker_group_state.workers
 
     def get_worker_group_context(self) -> WorkerGroupContext:
-        self._assert_active()
         return self._worker_group_context
 
     def get_worker_group_state(self) -> WorkerGroupState:
         self._assert_active()
         return self._worker_group_state
+
+    def get_latest_poll_status(self) -> Optional[WorkerGroupPollStatus]:
+        self._assert_active()
+        return self._latest_poll_status
 
     def __len__(self) -> int:
         self._assert_active()
@@ -667,6 +744,26 @@ class WorkerGroup:
                 node_rank=node_ips.index(worker.metadata.node_ip),
             )
             worker.distributed_context = distributed_context
+
+        return workers
+
+    @staticmethod
+    def _decorate_worker_log_file_paths(workers: List[Worker]) -> List[Worker]:
+        """Decorate worker log file paths.
+
+        Returns:
+            workers: Workers with log file paths set.
+        """
+        # Execute all tasks in parallel and then get results
+        log_path_refs = [
+            worker.execute_async(get_train_application_worker_log_path)
+            for worker in workers
+        ]
+        log_paths = ray_get_safe(log_path_refs)
+
+        # Assign log paths to workers
+        for worker, log_path in zip(workers, log_paths):
+            worker.log_file_path = log_path
 
         return workers
 
@@ -727,3 +824,24 @@ class WorkerGroup:
         for workers in node_id_to_workers.values():
             sorted_workers.extend(workers)
         return sorted_workers
+
+    @staticmethod
+    def _get_worker_runtime_env(
+        custom_runtime_env: Union[Dict, RuntimeEnv],
+    ) -> Union[Dict, RuntimeEnv]:
+        """Update custom runtime env with internal Ray Train env vars
+        that should be propagated from the driver to worker processes.
+
+        Args:
+            custom_runtime_env: The custom runtime env dict passed in by the user.
+
+        Returns:
+            A copy of the custom runtime env dict updated with internal
+            Ray Train environment variables to propagate to worker processes.
+        """
+        merged_env_vars = get_env_vars_to_propagate()
+        merged_env_vars.update(custom_runtime_env.get("env_vars", {}))
+
+        runtime_env = dict(custom_runtime_env)
+        runtime_env["env_vars"] = merged_env_vars
+        return runtime_env

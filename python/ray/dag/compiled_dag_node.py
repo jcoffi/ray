@@ -1,85 +1,83 @@
-import weakref
 import asyncio
-from collections import defaultdict
-from contextlib import nullcontext
-from dataclasses import dataclass, asdict
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    FrozenSet,
-    List,
-    Tuple,
-    Union,
-    Optional,
-    Set,
-)
 import logging
 import threading
 import time
-import uuid
 import traceback
-
-from ray.experimental.channel.auto_transport_type import (
-    AutoTransportType,
-    TypeHintResolver,
+import uuid
+import weakref
+from collections import defaultdict
+from contextlib import nullcontext
+from dataclasses import asdict, dataclass
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
 )
+
+import ray
 import ray.exceptions
-from ray.dag.dag_operation_future import GPUFuture, DAGOperationFuture, ResolvedFuture
-from ray.experimental.channel.cached_channel import CachedChannel
-from ray.experimental.channel.communicator import Communicator
 from ray.dag.constants import (
     RAY_CGRAPH_ENABLE_NVTX_PROFILING,
+    RAY_CGRAPH_ENABLE_TORCH_PROFILING,
     RAY_CGRAPH_VISUALIZE_SCHEDULE,
 )
-import ray
-from ray.exceptions import RayTaskError, RayChannelError, RayChannelTimeoutError
-from ray.experimental.compiled_dag_ref import (
-    CompiledDAGRef,
-    CompiledDAGFuture,
-    _process_return_vals,
-)
-from ray.experimental.channel import (
-    ChannelContext,
-    ChannelInterface,
-    ChannelOutputType,
-    ReaderInterface,
-    SynchronousReader,
-    WriterInterface,
-    SynchronousWriter,
-    AwaitableBackgroundReader,
-    AwaitableBackgroundWriter,
-    CompiledDAGArgs,
-    CompositeChannel,
-    IntraProcessChannel,
-)
-from ray.util.annotations import DeveloperAPI
-
-from ray.experimental.channel.shared_memory_channel import (
-    SharedMemoryType,
-)
-from ray.experimental.channel.torch_tensor_type import TorchTensorType
-
-from ray.experimental.channel.torch_tensor_nccl_channel import (
-    _init_communicator,
-    _destroy_communicator,
-)
-
 from ray.dag.dag_node_operation import (
+    _build_dag_node_operation_graph,
     _DAGNodeOperation,
     _DAGNodeOperationType,
     _DAGOperationGraphNode,
-    _build_dag_node_operation_graph,
     _extract_execution_schedule,
     _generate_actor_to_execution_schedule,
     _generate_overlapped_execution_schedule,
     _visualize_execution_schedule,
 )
-
+from ray.dag.dag_operation_future import DAGOperationFuture, GPUFuture, ResolvedFuture
+from ray.exceptions import (
+    RayCgraphCapacityExceeded,
+    RayChannelError,
+    RayChannelTimeoutError,
+    RayTaskError,
+)
+from ray.experimental.channel import (
+    AwaitableBackgroundReader,
+    AwaitableBackgroundWriter,
+    ChannelContext,
+    ChannelInterface,
+    ChannelOutputType,
+    CompiledDAGArgs,
+    CompositeChannel,
+    IntraProcessChannel,
+    ReaderInterface,
+    SynchronousReader,
+    SynchronousWriter,
+    WriterInterface,
+)
+from ray.experimental.channel.accelerator_context import AcceleratorContext
+from ray.experimental.channel.auto_transport_type import (
+    AutoTransportType,
+    TypeHintResolver,
+)
+from ray.experimental.channel.cached_channel import CachedChannel
+from ray.experimental.channel.communicator import Communicator
+from ray.experimental.channel.shared_memory_channel import (
+    SharedMemoryType,
+)
+from ray.experimental.channel.torch_tensor_accelerator_channel import (
+    _destroy_communicator,
+    _init_communicator,
+)
+from ray.experimental.channel.torch_tensor_type import TorchTensorType
+from ray.experimental.compiled_dag_ref import (
+    CompiledDAGFuture,
+    CompiledDAGRef,
+    _process_return_vals,
+)
+from ray.util.annotations import DeveloperAPI
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-
-if TYPE_CHECKING:
-    import cupy as cp
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +205,9 @@ def do_exec_tasks(
             task.prepare(overlap_gpu_communication=overlap_gpu_communication)
 
         if RAY_CGRAPH_ENABLE_NVTX_PROFILING:
+            assert (
+                not RAY_CGRAPH_ENABLE_TORCH_PROFILING
+            ), "NVTX and torch profiling cannot be enabled at the same time."
             try:
                 import nvtx
             except ImportError:
@@ -216,6 +217,26 @@ def do_exec_tasks(
                 )
             nvtx_profile = nvtx.Profile()
             nvtx_profile.enable()
+
+        if RAY_CGRAPH_ENABLE_TORCH_PROFILING:
+            assert (
+                not RAY_CGRAPH_ENABLE_NVTX_PROFILING
+            ), "NVTX and torch profiling cannot be enabled at the same time."
+
+            import torch
+
+            torch_profile = torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                with_stack=True,
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                    "compiled_graph_torch_profiles"
+                ),
+            )
+            torch_profile.start()
+            logger.info("Torch profiling started")
 
         done = False
         while True:
@@ -230,6 +251,10 @@ def do_exec_tasks(
 
         if RAY_CGRAPH_ENABLE_NVTX_PROFILING:
             nvtx_profile.disable()
+
+        if RAY_CGRAPH_ENABLE_TORCH_PROFILING:
+            torch_profile.stop()
+            logger.info("Torch profiling stopped")
     except Exception:
         logging.exception("Compiled DAG task exited with exception")
         raise
@@ -291,6 +316,9 @@ def do_profile_tasks(
 
 @DeveloperAPI
 def do_cancel_executable_tasks(self, tasks: List["ExecutableTask"]) -> None:
+    # CUDA events should be destroyed before other CUDA resources.
+    for task in tasks:
+        task.destroy_cuda_event()
     for task in tasks:
         task.cancel()
 
@@ -308,18 +336,19 @@ def _wrap_exception(exc):
     return wrapped
 
 
-def _get_nccl_group_id(type_hint: ChannelOutputType) -> Optional[str]:
+def _get_comm_group_id(type_hint: ChannelOutputType) -> Optional[str]:
     """
-    Get the NCCL group ID from the type hint. If the type hint does not
-    require NCCL, return None.
+    Get the communicator group ID from the type hint. If the type hint does not
+    require communicator, return None.
 
     Args:
         type_hint: The type hint of the channel.
 
     Returns:
-        The NCCL group ID if the type hint requires NCCL, otherwise None.
+        The communicator group ID if the type hint requires communicator,
+        otherwise None.
     """
-    if type_hint.requires_nccl():
+    if type_hint.requires_accelerator():
         assert isinstance(type_hint, TorchTensorType)
         return type_hint.communicator_id
     return None
@@ -328,7 +357,7 @@ def _get_nccl_group_id(type_hint: ChannelOutputType) -> Optional[str]:
 def _device_context_manager():
     """
     Return a context manager for executing communication operations
-    (i.e., READ and WRITE). For NCCL operations, the context manager
+    (i.e., READ and WRITE). For accelerator operations, the context manager
     uses the proper cuda device from channel context, otherwise,
     nullcontext will be returned.
     """
@@ -337,16 +366,19 @@ def _device_context_manager():
 
     import torch
 
+    from ray.experimental.channel.accelerator_context import AcceleratorContext
+
     device = ChannelContext.get_current().torch_device
 
-    if device.type == "cuda" and torch.cuda.is_available():
+    if device.type == "cuda" and not torch.cuda.is_available():
         # In the case of mocked NCCL, we may get a device with type "cuda"
         # but CUDA is not available. We return nullcontext() in that case,
         # otherwise torch raises a runtime error if the cuda device context
         # manager is used.
         # TODO(rui): consider better mocking NCCL to support device context.
-        return torch.cuda.device(device)
-    return nullcontext()
+        return nullcontext()
+
+    return AcceleratorContext.get().get_device_context(device)
 
 
 @DeveloperAPI
@@ -474,7 +506,7 @@ class ExecutableTask:
         self.input_type_hints: List[ChannelOutputType] = task.arg_type_hints
         self.output_type_hint: ChannelOutputType = task.dag_node.type_hint
 
-        # The NCCL collective operation.
+        # The accelerator collective operation.
         self.collective_op: Optional["ray.dag.CollectiveOperation"] = None
         if isinstance(task.dag_node, CollectiveOutputNode):
             self.collective_op = task.dag_node.collective_op
@@ -492,12 +524,7 @@ class ExecutableTask:
 
         for arg in resolved_args:
             if isinstance(arg, ChannelInterface):
-                if isinstance(arg, ChannelInterface):
-                    channel = arg
-                else:
-                    adapter = arg
-                    channel = adapter.get_dag_input_channel()
-
+                channel = arg
                 if channel in input_channel_to_idx:
                     # The same channel was added before, so reuse the index.
                     channel_idx = input_channel_to_idx[channel]
@@ -537,6 +564,14 @@ class ExecutableTask:
         self.input_reader.close()
         self.output_writer.close()
 
+    def destroy_cuda_event(self):
+        """
+        If this executable task has created a GPU future that is not yet waited on,
+        that future is in the channel context cache. Remove the future from the cache
+        and destroy its CUDA event.
+        """
+        GPUFuture.remove_gpu_future(self.task_idx)
+
     def prepare(self, overlap_gpu_communication: bool = False):
         """
         Prepare the task for execution. The `exec_operation` function can only
@@ -552,32 +587,34 @@ class ExecutableTask:
         self.input_reader.start()
         self.output_writer.start()
 
-        self._send_stream: Union["cp.cuda.Stream", nullcontext] = nullcontext()
-        self._recv_stream: Union["cp.cuda.Stream", nullcontext] = nullcontext()
+        # Stream context type are different between different accelerators.
+        # Type hint is not applicable here.
+        self._send_stream = nullcontext()
+        self._recv_stream = nullcontext()
         if not overlap_gpu_communication:
             return
 
         # Set up send_stream and recv_stream when overlap_gpu_communication
         # is configured
-        if self.output_type_hint.requires_nccl():
-            nccl_group_id = _get_nccl_group_id(self.output_type_hint)
-            nccl_group = ChannelContext.get_current().communicators.get(nccl_group_id)
-            assert nccl_group is not None
-            self._send_stream = nccl_group.send_stream
+        if self.output_type_hint.requires_accelerator():
+            comm_group_id = _get_comm_group_id(self.output_type_hint)
+            comm_group = ChannelContext.get_current().communicators.get(comm_group_id)
+            assert comm_group is not None
+            self._send_stream = comm_group.send_stream
         if self.input_type_hints:
             for type_hint in self.input_type_hints:
-                if type_hint.requires_nccl():
-                    nccl_group_id = _get_nccl_group_id(type_hint)
-                    nccl_group = ChannelContext.get_current().communicators.get(
-                        nccl_group_id
+                if type_hint.requires_accelerator():
+                    comm_group_id = _get_comm_group_id(type_hint)
+                    comm_group = ChannelContext.get_current().communicators.get(
+                        comm_group_id
                     )
-                    assert nccl_group is not None
+                    assert comm_group is not None
                     if not isinstance(self._recv_stream, nullcontext):
-                        assert self._recv_stream == nccl_group.recv_stream, (
+                        assert self._recv_stream == comm_group.recv_stream, (
                             "Currently all torch tensor input channels of a "
                             "Compiled Graph task should use the same recv cuda stream."
                         )
-                    self._recv_stream = nccl_group.recv_stream
+                    self._recv_stream = comm_group.recv_stream
 
     def wrap_and_set_intermediate_future(
         self, val: Any, wrap_in_gpu_future: bool
@@ -596,7 +633,7 @@ class ExecutableTask:
         assert self._intermediate_future is None
 
         if wrap_in_gpu_future:
-            future = GPUFuture(val)
+            future = GPUFuture(val, self.task_idx)
         else:
             future = ResolvedFuture(val)
         self._intermediate_future = future
@@ -636,7 +673,8 @@ class ExecutableTask:
             # a GPUFuture so that this read operation (communication) can
             # be overlapped with computation.
             self.wrap_and_set_intermediate_future(
-                input_data, wrap_in_gpu_future=overlap_gpu_communication
+                input_data,
+                wrap_in_gpu_future=overlap_gpu_communication,
             )
         except RayChannelError:
             # Channel closed. Exit the loop.
@@ -681,7 +719,7 @@ class ExecutableTask:
             resolved_inputs.append(task_input.resolve(input_data))
 
         if self.collective_op is not None:
-            # Run a NCCL collective operation.
+            # Run an accelerator collective operation.
             method = self.collective_op.execute
         else:
             # Run an actor method.
@@ -797,6 +835,7 @@ class CompiledDAG:
         buffer_size_bytes: Optional[int] = None,
         enable_asyncio: bool = False,
         max_inflight_executions: Optional[int] = None,
+        max_buffered_results: Optional[int] = None,
         overlap_gpu_communication: Optional[bool] = None,
         default_communicator: Optional[Union[Communicator, str]] = "create",
     ):
@@ -818,6 +857,14 @@ class CompiledDAG:
                 can be submitted via `execute` or `execute_async` before consuming
                 the output using `ray.get()`. If the caller submits more executions,
                 `RayCgraphCapacityExceeded` is raised.
+            max_buffered_results: The maximum number of results that can be
+                buffered at the driver. If more results are buffered,
+                `RayCgraphCapacityExceeded` is raised. Note that
+                when result corresponding to an execution is retrieved
+                (by calling `ray.get()` on a `CompiledDAGRef` or
+                `CompiledDAGRef` or await on a `CompiledDAGFuture), results
+                corresponding to earlier executions that have not been retrieved
+                yet are buffered.
             overlap_gpu_communication: (experimental) Whether to overlap GPU
                 communication with computation during DAG execution. If True, the
                 communication and computation can be overlapped, which can improve
@@ -827,7 +874,7 @@ class CompiledDAG:
                 tensors. Three types of values are valid. (1) Communicator:
                 For p2p operations, this is the default communicator
                 to use for nodes annotated with `with_tensor_transport()` and when
-                shared memory is not the desired option (e.g., when transport="nccl",
+                shared memory is not the desired option (e.g., when transport="accelerator",
                 or when transport="auto" for communication between two different GPUs).
                 For collective operations, this is the default communicator to use
                 when a custom communicator is not specified.
@@ -851,6 +898,9 @@ class CompiledDAG:
         self._max_inflight_executions = max_inflight_executions
         if self._max_inflight_executions is None:
             self._max_inflight_executions = ctx.max_inflight_executions
+        self._max_buffered_results = max_buffered_results
+        if self._max_buffered_results is None:
+            self._max_buffered_results = ctx.max_buffered_results
         self._dag_id = uuid.uuid4().hex
         self._submit_timeout: Optional[float] = submit_timeout
         if self._submit_timeout is None:
@@ -890,7 +940,7 @@ class CompiledDAG:
         # These communicators are created by Compiled Graph, rather than passed in.
         # Communicators are only created when self._create_default_communicator is True.
         self._actors_to_created_communicator_id: Dict[
-            FrozenSet["ray.actor.ActorHandle"], str
+            Tuple["ray.actor.ActorHandle"], str
         ] = {}
 
         # Set of actors involved in P2P communication using an unresolved communicator.
@@ -954,8 +1004,6 @@ class CompiledDAG:
         # ObjectRef for each worker's task. The task is an infinite loop that
         # repeatedly executes the method specified in the DAG.
         self.worker_task_refs: Dict["ray.actor.ActorHandle", "ray.ObjectRef"] = {}
-        # Set of actors present in the DAG.
-        self.actor_refs = set()
         self.actor_to_tasks: Dict[
             "ray.actor.ActorHandle", List["CompiledTask"]
         ] = defaultdict(list)
@@ -1001,11 +1049,16 @@ class CompiledDAG:
         self._proxy_actor = _create_proxy_actor()
         # Set to True when `teardown` API is called.
         self._is_teardown = False
-        # execution indices -> set of channel indices of destructed CompiledDAGRefs
-        # When a CompiledDagRef is destructed and its result has not been cached and
-        # ray.get has not been called on it, we will add it to this dict, so that
-        # we can lazily release the native buffers
-        self._destructed_ref_idxs: Dict[int, Set[Optional[int]]] = defaultdict(set)
+        # Execution index to set of channel indices for CompiledDAGRefs
+        # or CompiledDAGFuture whose destructor has been called. A "None"
+        # channel index means there is only one channel, and its destructor
+        # has been called.
+        self._destructed_ref_idxs: Dict[int, Set[Optional[int]]] = dict()
+        # Execution index to set of channel indices for CompiledDAGRefs
+        # or CompiledDAGFuture whose get() has been called. A "None"
+        # channel index means there is only one channel, and its get()
+        # has been called.
+        self._got_ref_idxs: Dict[int, Set[Optional[int]]] = dict()
 
     @property
     def is_teardown(self) -> bool:
@@ -1034,9 +1087,9 @@ class CompiledDAG:
         This function is idempotent.
         """
         from ray.dag import (
-            DAGNode,
             ClassMethodNode,
             CollectiveOutputNode,
+            DAGNode,
             FunctionNode,
             InputAttributeNode,
             InputNode,
@@ -1133,10 +1186,10 @@ class CompiledDAG:
                 if isinstance(dag_node.type_hint, AutoTransportType):
                     auto_transport_tasks.add(task)
 
-                # Collect actors for NCCL P2P methods.
-                if dag_node.type_hint.requires_nccl():
+                # Collect actors for accelerator P2P methods.
+                if dag_node.type_hint.requires_accelerator():
                     self._track_communicator_usage(dag_node, {actor_handle})
-                # Collect NCCL collective operations.
+                # Collect accelerator collective operations.
                 if isinstance(dag_node, CollectiveOutputNode):
                     self._track_communicator_usage(
                         dag_node,
@@ -1145,21 +1198,23 @@ class CompiledDAG:
                     )
                     assert not self._overlap_gpu_communication, (
                         "Currently, the overlap_gpu_communication option is not "
-                        "supported for NCCL collective operations. Please set "
+                        "supported for accelerator collective operations. Please set "
                         "overlap_gpu_communication=False."
                     )
             elif isinstance(dag_node, InputNode) or isinstance(
                 dag_node, InputAttributeNode
             ):
-                if dag_node.type_hint.requires_nccl():
+                if dag_node.type_hint.requires_accelerator():
                     raise ValueError(
-                        "DAG inputs cannot be transferred via NCCL because "
-                        "the driver cannot participate in the NCCL group"
+                        "DAG inputs cannot be transferred via accelerator because "
+                        "the driver cannot participate in the communicator group"
                     )
                 if isinstance(dag_node.type_hint, AutoTransportType):
                     # Currently driver on GPU is not supported, so we always
                     # use shared memory to transfer tensors.
-                    dag_node.type_hint = TorchTensorType()
+                    dag_node.type_hint = TorchTensorType(
+                        device=dag_node.type_hint.device
+                    )
 
             if type(dag_node.type_hint) is ChannelOutputType:
                 # No type hint specified by the user. Replace
@@ -1225,7 +1280,7 @@ class CompiledDAG:
 
                 upstream_task.downstream_task_idxs[task_idx] = downstream_actor_handle
 
-                if upstream_task.dag_node.type_hint.requires_nccl():
+                if upstream_task.dag_node.type_hint.requires_accelerator():
                     # Here we are processing the args of the DAGNode, so track
                     # downstream actors only, upstream actor is already tracked
                     # when processing the DAGNode itself.
@@ -1266,6 +1321,10 @@ class CompiledDAG:
             for type_hint in type_hints:
                 type_hint.set_communicator_id(communicator_id)
 
+        # Second, get registered accelerator context if any.
+        accelerator_module_name = AcceleratorContext.get().module_name
+        accelerator_communicator_cls = AcceleratorContext.get().communicator_cls
+
         # Then, create communicators for collective operations.
         # Reuse an already created communicator for the same set of actors.
         for collective_op in self._collective_ops_with_unresolved_communicators:
@@ -1273,7 +1332,8 @@ class CompiledDAG:
                 raise ValueError(
                     "Communicator creation is not allowed for collective operations."
                 )
-            actors = frozenset(collective_op.actor_handles)
+            # using tuple to preserve the order of actors for collective operations
+            actors = tuple(collective_op.actor_handles)
             if actors in self._actors_to_created_communicator_id:
                 communicator_id = self._actors_to_created_communicator_id[actors]
             else:
@@ -1281,6 +1341,8 @@ class CompiledDAG:
                     list(actors),
                     None,
                     self._overlap_gpu_communication,
+                    accelerator_module_name,
+                    accelerator_communicator_cls,
                 )
                 self._actors_to_created_communicator_id[actors] = communicator_id
             collective_op.type_hint.set_communicator_id(communicator_id)
@@ -1302,6 +1364,8 @@ class CompiledDAG:
                     list(self._p2p_actors_with_unresolved_communicators),
                     None,
                     self._overlap_gpu_communication,
+                    accelerator_module_name,
+                    accelerator_communicator_cls,
                 )
             for dag_node in self._p2p_dag_nodes_with_unresolved_communicators:
                 dag_node.type_hint.set_communicator_id(p2p_communicator_id)
@@ -1332,7 +1396,7 @@ class CompiledDAG:
             collective_op: Whether the communicator is used for a collective operation.
         """
         if None in actors:
-            raise ValueError("Driver cannot participate in the NCCL group.")
+            raise ValueError("Driver cannot participate in the communicator group.")
         if collective_op:
             type_hint = dag_node._collective_op.type_hint
         else:
@@ -1394,9 +1458,9 @@ class CompiledDAG:
         Resolve the auto transport type hint for the DAG.
         """
         type_hint_resolver = TypeHintResolver(self.actor_to_gpu_ids)
-        # Resolve AutoChannelType type hints and track the actors that use NCCL.
-        # This is needed so that the NCCL group can be initialized for these
-        # actors that use NCCL.
+        # Resolve AutoChannelType type hints and track the actors that use accelerator.
+        # This is needed so that the communicator group can be initialized for
+        # these actors that use accelerator.
         for task in auto_transport_tasks:
             writer = task.dag_node._get_actor_handle()
             readers = task.downstream_task_idxs.values()
@@ -1412,7 +1476,7 @@ class CompiledDAG:
                 writer_and_node,
                 reader_and_node_list,
             )
-            if task.dag_node.type_hint.requires_nccl():
+            if task.dag_node.type_hint.requires_accelerator():
                 self._track_communicator_usage(
                     task.dag_node,
                     set(readers).union({writer}),
@@ -1423,8 +1487,8 @@ class CompiledDAG:
         Check if there are leaf nodes in the DAG and raise an error if there are.
         """
         from ray.dag import (
-            DAGNode,
             ClassMethodNode,
+            DAGNode,
         )
 
         leaf_nodes: List[DAGNode] = []
@@ -1497,11 +1561,11 @@ class CompiledDAG:
         outputs for the DAG.
         """
         from ray.dag import (
-            DAGNode,
-            InputNode,
-            InputAttributeNode,
-            MultiOutputNode,
             ClassMethodNode,
+            DAGNode,
+            InputAttributeNode,
+            InputNode,
+            MultiOutputNode,
         )
 
         if self.input_task_idx is None:
@@ -1608,7 +1672,6 @@ class CompiledDAG:
                     task.output_node_idxs.append(self.dag_node_to_idx[downstream_node])
                 actor_handle = task.dag_node._get_actor_handle()
                 assert actor_handle is not None
-                self.actor_refs.add(actor_handle)
                 self.actor_to_tasks[actor_handle].append(task)
             elif (
                 isinstance(task.dag_node, ClassMethodNode)
@@ -1710,7 +1773,7 @@ class CompiledDAG:
 
         if RAY_CGRAPH_ENABLE_DETECT_DEADLOCK and self._detect_deadlock():
             raise ValueError(
-                "This DAG cannot be compiled because it will deadlock on NCCL "
+                "This DAG cannot be compiled because it will deadlock on accelerator "
                 "calls. If you believe this is a false positive, please disable "
                 "the graph verification by setting the environment variable "
                 "RAY_CGRAPH_ENABLE_DETECT_DEADLOCK to 0 and file an issue at "
@@ -1878,7 +1941,7 @@ class CompiledDAG:
                 ]
             }
         """
-        from ray.dag.collective_node import CollectiveOutputNode, _CollectiveOperation
+        from ray.dag.collective_node import CollectiveOutputNode
 
         assert self.idx_to_task
         assert self.actor_to_executable_tasks
@@ -1886,12 +1949,6 @@ class CompiledDAG:
         actor_to_operation_nodes: Dict[
             "ray.actor.ActorHandle", List[List[_DAGOperationGraphNode]]
         ] = defaultdict(list)
-        collective_op_to_nodes: Dict[
-            _CollectiveOperation, Set[_DAGOperationGraphNode]
-        ] = defaultdict(set)
-        collective_op_to_idxs: Dict[
-            _CollectiveOperation, Tuple[int, _DAGNodeOperationType]
-        ] = defaultdict(set)
 
         for actor_handle, executable_tasks in self.actor_to_executable_tasks.items():
             for exec_task_idx, exec_task in enumerate(executable_tasks):
@@ -1901,12 +1958,15 @@ class CompiledDAG:
                 dag_node = self.idx_to_task[task_idx].dag_node
                 method_name = exec_task.method_name
                 actor_handle = dag_node._get_actor_handle()
-                requires_nccl = dag_node.type_hint.requires_nccl()
-                upstream_requires_nccl = False
+                requires_accelerator_read = False
                 for upstream_node in dag_node._upstream_nodes:
-                    if upstream_node.type_hint.requires_nccl():
-                        upstream_requires_nccl = True
+                    if upstream_node.type_hint.requires_accelerator():
+                        requires_accelerator_read = True
                         break
+                requires_accelerator_compute = isinstance(
+                    dag_node, CollectiveOutputNode
+                )
+                requires_accelerator_write = dag_node.type_hint.requires_accelerator()
 
                 read_node = _DAGOperationGraphNode(
                     _DAGNodeOperation(
@@ -1914,7 +1974,7 @@ class CompiledDAG:
                     ),
                     task_idx,
                     actor_handle,
-                    upstream_requires_nccl,
+                    requires_accelerator_read,
                 )
                 compute_node = _DAGOperationGraphNode(
                     _DAGNodeOperation(
@@ -1922,7 +1982,7 @@ class CompiledDAG:
                     ),
                     task_idx,
                     actor_handle,
-                    isinstance(dag_node, CollectiveOutputNode),
+                    requires_accelerator_compute,
                 )
                 write_node = _DAGOperationGraphNode(
                     _DAGNodeOperation(
@@ -1930,23 +1990,12 @@ class CompiledDAG:
                     ),
                     task_idx,
                     actor_handle,
-                    requires_nccl,
+                    requires_accelerator_write,
                 )
 
                 actor_to_operation_nodes[actor_handle].append(
                     [read_node, compute_node, write_node]
                 )
-                if isinstance(dag_node, CollectiveOutputNode):
-                    collective_op_to_nodes[dag_node.collective_op].add(compute_node)
-                    collective_op_to_idxs[dag_node.collective_op].add(
-                        (task_idx, _DAGNodeOperationType.COMPUTE)
-                    )
-
-        # Set collective nodes for all the NCCL collective operation nodes.
-        for collective_op, nodes in collective_op_to_nodes.items():
-            idxs = collective_op_to_idxs[collective_op]
-            for node in nodes:
-                node.collective_idxs = idxs
 
         return actor_to_operation_nodes
 
@@ -2008,8 +2057,8 @@ class CompiledDAG:
         """
         TODO (kevin85421): Avoid false negatives.
 
-        Currently, a compiled graph may deadlock if there are NCCL channels, and the
-        readers have control dependencies on the same actor. For example:
+        Currently, a compiled graph may deadlock if there are accelerator channels,
+        and the readers have control dependencies on the same actor. For example:
 
         actor1.a ---> actor2.f1
                  |
@@ -2029,7 +2078,7 @@ class CompiledDAG:
         return False
 
     def _monitor_failures(self):
-        outer = weakref.proxy(self)
+        get_outer = weakref.ref(self)
 
         class Monitor(threading.Thread):
             def __init__(self):
@@ -2040,7 +2089,22 @@ class CompiledDAG:
                 self._in_teardown_lock = threading.Lock()
                 self._teardown_done = False
 
+            def _outer_ref_alive(self) -> bool:
+                if get_outer() is None:
+                    logger.error(
+                        "CompiledDAG has been destructed before teardown. "
+                        "This should not occur please report an issue at "
+                        "https://github.com/ray-project/ray/issues/new/.",
+                        stack_info=True,
+                    )
+                    return False
+                return True
+
             def wait_teardown(self, kill_actors: bool = False):
+                outer = get_outer()
+                if not self._outer_ref_alive():
+                    return
+
                 from ray.dag import DAGContext
 
                 ctx = DAGContext.get_current()
@@ -2084,50 +2148,60 @@ class CompiledDAG:
                     except Exception:
                         pass
 
+                if kill_actors:
+                    # In the previous loop, we allow the actor tasks to exit first.
+                    # Now, we force kill the actors if not yet.
+                    for actor in outer.worker_task_refs:
+                        logger.info(f"Killing actor: {actor}")
+                        ray.kill(actor)
+
             def teardown(self, kill_actors: bool = False):
                 with self._in_teardown_lock:
                     if self._teardown_done:
                         return
 
+                    outer = get_outer()
+                    if not self._outer_ref_alive():
+                        return
+
                     logger.info("Tearing down compiled DAG")
-                    try:
-                        outer._dag_submitter.close()
-                        outer._dag_output_fetcher.close()
+                    outer._dag_submitter.close()
+                    outer._dag_output_fetcher.close()
 
-                        for actor in outer.actor_refs:
-                            logger.info(f"Cancelling compiled worker on actor: {actor}")
-                        # Cancel all actor loops in parallel.
-                        cancel_refs = [
-                            actor.__ray_call__.remote(do_cancel_executable_tasks, tasks)
-                            for actor, tasks in outer.actor_to_executable_tasks.items()
-                        ]
-                        for cancel_ref in cancel_refs:
-                            try:
-                                ray.get(cancel_ref, timeout=30)
-                            except RayChannelError:
-                                # Channel error happens when a channel is closed
-                                # or timed out. In this case, do not log.
-                                pass
-                            except Exception:
-                                logger.exception("Error cancelling worker task")
-                                pass
+                    for actor in outer.actor_to_executable_tasks.keys():
+                        logger.info(f"Cancelling compiled worker on actor: {actor}")
+                    # Cancel all actor loops in parallel.
+                    cancel_refs = [
+                        actor.__ray_call__.remote(do_cancel_executable_tasks, tasks)
+                        for actor, tasks in outer.actor_to_executable_tasks.items()
+                    ]
+                    for cancel_ref in cancel_refs:
+                        try:
+                            ray.get(cancel_ref, timeout=30)
+                        except RayChannelError:
+                            # Channel error happens when a channel is closed
+                            # or timed out. In this case, do not log.
+                            pass
+                        except Exception:
+                            logger.exception("Error cancelling worker task")
+                            pass
 
-                        for (
-                            communicator_id
-                        ) in outer._actors_to_created_communicator_id.values():
-                            _destroy_communicator(communicator_id)
+                    for (
+                        communicator_id
+                    ) in outer._actors_to_created_communicator_id.values():
+                        _destroy_communicator(communicator_id)
 
-                        logger.info("Waiting for worker tasks to exit")
-                        self.wait_teardown(kill_actors=kill_actors)
-                    except ReferenceError:
-                        # Python destruction order is not guaranteed, so we may
-                        # access attributes of `outer` which are already destroyed.
-                        logger.info("Compiled DAG is already destroyed")
+                    logger.info("Waiting for worker tasks to exit")
+                    self.wait_teardown(kill_actors=kill_actors)
+
                     logger.info("Teardown complete")
                     self._teardown_done = True
 
             def run(self):
                 try:
+                    outer = get_outer()
+                    if not self._outer_ref_alive():
+                        return
                     ray.get(list(outer.worker_task_refs.values()))
                 except KeyboardInterrupt:
                     logger.info(
@@ -2145,7 +2219,7 @@ class CompiledDAG:
     def _raise_if_too_many_inflight_executions(self):
         num_inflight_executions = (
             self._execution_index - self._max_finished_execution_index
-        ) + len(self._result_buffer)
+        )
         if num_inflight_executions >= self._max_inflight_executions:
             raise ray.exceptions.RayCgraphCapacityExceeded(
                 "The compiled graph can't have more than "
@@ -2230,49 +2304,173 @@ class CompiledDAG:
             ]
         else:
             result = [self._result_buffer[execution_index].pop(channel_index)]
-            if len(self._result_buffer[execution_index]) == 0:
-                del self._result_buffer[execution_index]
+
+        if execution_index not in self._got_ref_idxs:
+            self._got_ref_idxs[execution_index] = set()
+        self._got_ref_idxs[execution_index].add(channel_index)
+        self._clean_up_buffers(execution_index)
         return result
 
-    def _next_execution_can_be_released(self) -> bool:
+    def _delete_execution_results(self, execution_index: int, channel_index: int):
         """
-        Check if the next buffers for the next execution which will be completed
-        can be released. The next execution can be released if the next
-        execution index is in _destructed_ref_idxs and the number of destructed
-        channel indices is equal to the number of output channels.
+        Delete the execution results for the given execution index and channel index.
+        This method should be called when a CompiledDAGRef or CompiledDAGFuture is
+        destructed.
+
+        Note that this method maintains metadata for the deleted execution results,
+        and only actually deletes the buffers lazily when the buffer is not needed
+        anymore.
+
+        Args:
+            execution_index: The execution index to destruct results from.
+            channel_index: The index of the output channel corresponding to the result.
         """
-        return (
-            self._max_finished_execution_index + 1 in self._destructed_ref_idxs
-            and len(self._destructed_ref_idxs[self._max_finished_execution_index + 1])
-            == len(self.dag_output_channels)
-        )
+        if execution_index not in self._destructed_ref_idxs:
+            self._destructed_ref_idxs[execution_index] = set()
+        self._destructed_ref_idxs[execution_index].add(channel_index)
+        self._clean_up_buffers(execution_index)
+
+    def _try_release_result_buffer(self, execution_index: int):
+        """
+        Try to release the result buffer for the given execution index.
+        """
+
+        should_release = False
+        got_channel_idxs = self._got_ref_idxs.get(execution_index, set())
+        if None in got_channel_idxs:
+            assert len(got_channel_idxs) == 1, (
+                "when None exists in got_channel_idxs, it means all channels, and "
+                "it should be the only value in the set",
+            )
+            should_release = True
+        else:
+            destructed_channel_idxs = self._destructed_ref_idxs.get(
+                execution_index, set()
+            )
+            processed_channel_idxs = got_channel_idxs.union(destructed_channel_idxs)
+            # No more processing is needed for this execution index.
+            should_release = processed_channel_idxs == set(
+                range(len(self.dag_output_channels))
+            )
+
+        if not should_release:
+            return False
+
+        self._result_buffer.pop(execution_index, None)
+        self._destructed_ref_idxs.pop(execution_index, None)
+        self._got_ref_idxs.pop(execution_index, None)
+        return True
+
+    def _try_release_native_buffer(
+        self, idx_to_release: int, timeout: Optional[float] = None
+    ) -> bool:
+        """
+        Try to release the native buffer for the given execution index.
+
+        Args:
+            idx_to_release: The execution index to release buffers from.
+            timeout: The maximum time in seconds to wait for the release.
+
+        Returns:
+            Whether the buffers have been released.
+        """
+        if idx_to_release != self._max_finished_execution_index + 1:
+            # Native buffer can only be released for the next execution index.
+            return False
+
+        destructed_channel_idxs = self._destructed_ref_idxs.get(idx_to_release, set())
+        should_release = False
+        if None in destructed_channel_idxs:
+            assert len(destructed_channel_idxs) == 1, (
+                "when None exists in destructed_channel_idxs, it means all channels, "
+                "and it should be the only value in the set",
+            )
+            should_release = True
+        elif len(destructed_channel_idxs) == len(self.dag_output_channels):
+            should_release = True
+
+        if not should_release:
+            return False
+
+        # refs corresponding to idx_to_release are all destructed,
+        # and they are never fetched or cached.
+        assert idx_to_release not in self._result_buffer
+        assert idx_to_release not in self._got_ref_idxs
+
+        try:
+            self._dag_output_fetcher.release_channel_buffers(timeout)
+        except RayChannelTimeoutError as e:
+            raise RayChannelTimeoutError(
+                "Releasing native buffers corresponding to a stale CompiledDAGRef "
+                "is taking a long time. If this is expected, increase "
+                f"RAY_CGRAPH_get_timeout which is currently {self._get_timeout} "
+                "seconds. Otherwise, this may indicate that the execution "
+                "is hanging."
+            ) from e
+        self._destructed_ref_idxs.pop(idx_to_release)
+
+        return True
+
+    def _try_release_buffer(
+        self, idx_to_release: int, timeout: Optional[float] = None
+    ) -> bool:
+        """
+        Try to release the buffer for the given execution index.
+        First try to release the native buffer, then try to release the result buffer.
+
+        Args:
+            idx_to_release: The execution index to release buffers from.
+            timeout: The maximum time in seconds to wait for the release.
+
+        Returns:
+            Whether the native buffer or result buffer has been released.
+        """
+        if self._try_release_native_buffer(idx_to_release, timeout):
+            # Releasing native buffer means the corresponding execution result
+            # is consumed (and discarded).
+            self._max_finished_execution_index += 1
+            return True
+        return self._try_release_result_buffer(idx_to_release)
 
     def _try_release_buffers(self):
         """
-        This will try to repeatedly release channel buffers as long as
-        max_finished_execution_index + 1 is in the set of destructed indices.
-        We should be checking to release buffers any time we are incrementing
-        or checking the max_finished_execution_index or the _destructed_ref_idxs.
+        Repeatedly release buffer if possible.
+
+        This method starts from _max_finished_execution_index + 1 and tries to release
+        as many buffers as possible. If a native buffer is released,
+        _max_finished_execution_index will be incremented.
         """
         timeout = self._get_timeout
-        while self._next_execution_can_be_released():
+        while True:
             start_time = time.monotonic()
-            try:
-                self._dag_output_fetcher.release_channel_buffers(timeout)
-            except RayChannelTimeoutError as e:
-                raise RayChannelTimeoutError(
-                    "Releasing native buffers corresponding to a stale CompiledDAGRef "
-                    "is taking a long time. If this is expected, increase "
-                    f"RAY_CGRAPH_get_timeout which is currently {self._get_timeout} "
-                    "seconds. Otherwise, this may indicate that the execution "
-                    "is hanging."
-                ) from e
-
-            self._max_finished_execution_index += 1
+            if not self._try_release_buffer(
+                self._max_finished_execution_index + 1, timeout
+            ):
+                break
 
             if timeout != -1:
                 timeout -= time.monotonic() - start_time
                 timeout = max(timeout, 0)
+
+    def _clean_up_buffers(self, idx_to_release: int):
+        """
+        Clean up native and result buffers.
+
+        This method:
+        1. Tries to release the buffer for the given execution index.
+           This index is the specific one that requires a clean up,
+           e.g., right after get() is called or a CompiledDAGRef/CompiledDAGFuture
+           is destructed.
+        2. Tries to release all buffers starting from _max_finished_execution_index + 1.
+           This step is to clean up buffers that are no longer needed.
+
+        Args:
+            idx_to_release: The execution index that requires a clean up,
+                e.g., right after get() is called or a CompiledDAGRef/CompiledDAGFuture
+                is destructed.
+        """
+        self._try_release_buffer(idx_to_release)
+        self._try_release_buffers()
 
     def _execute_until(
         self,
@@ -2304,6 +2502,16 @@ class CompiledDAG:
         if timeout is None:
             timeout = self._get_timeout
         while self._max_finished_execution_index < execution_index:
+            if len(self._result_buffer) >= self._max_buffered_results:
+                raise RayCgraphCapacityExceeded(
+                    "The compiled graph can't have more than "
+                    f"{self._max_buffered_results} buffered results, and you "
+                    f"currently have {len(self._result_buffer)} buffered results. "
+                    "Call `ray.get()` on CompiledDAGRef's (or await on "
+                    "CompiledDAGFuture's) to retrieve results, or increase "
+                    f"`_max_buffered_results` if buffering is desired, note that "
+                    "this will increase driver memory usage."
+                )
             start_time = time.monotonic()
 
             # Fetch results from each output channel up to execution_index and cache
@@ -2311,14 +2519,18 @@ class CompiledDAG:
             # If a CompiledDagRef for a specific execution index has been destructed,
             # release the channel buffers for that execution index instead of caching
             try:
-                if self._next_execution_can_be_released():
-                    self._dag_output_fetcher.release_channel_buffers(timeout)
-                else:
+                if not self._try_release_native_buffer(
+                    self._max_finished_execution_index + 1, timeout
+                ):
                     result = self._dag_output_fetcher.read(timeout)
                     self._cache_execution_results(
                         self._max_finished_execution_index + 1,
                         result,
                     )
+                # We have either released the native buffer or fetched and
+                # cached the result buffer, therefore we always increment
+                # _max_finished_execution_index.
+                self._max_finished_execution_index += 1
             except RayChannelTimeoutError as e:
                 raise RayChannelTimeoutError(
                     "If the execution is expected to take a long time, increase "
@@ -2326,8 +2538,6 @@ class CompiledDAG:
                     "seconds. Otherwise, this may indicate that the execution is "
                     "hanging."
                 ) from e
-
-            self._max_finished_execution_index += 1
 
             if timeout != -1:
                 timeout -= time.monotonic() - start_time
@@ -2570,16 +2780,16 @@ class CompiledDAG:
             # |                             |---------------------------->|                            # noqa
             # |                             9:Output[0]                   10:Output[1]                 # noqa
             # |<----------------------------------------------------------|                            # noqa
-            # 8:MultiOutputNod
+            # 8:MultiOutputNode
             ```
         """
 
         from ray.dag import (
+            ClassMethodNode,
+            DAGNode,
             InputAttributeNode,
             InputNode,
             MultiOutputNode,
-            ClassMethodNode,
-            DAGNode,
         )
 
         # Check that the DAG has been compiled
@@ -2649,8 +2859,8 @@ class CompiledDAG:
 
                     # Get the type hint for this argument
                     if arg_index < len(task.arg_type_hints):
-                        if task.arg_type_hints[arg_index].requires_nccl():
-                            type_hint = "Nccl"
+                        if task.arg_type_hints[arg_index].requires_accelerator():
+                            type_hint = "Accelerator"
                         else:
                             type_hint = type(task.arg_type_hints[arg_index]).__name__
                     else:
@@ -2694,7 +2904,7 @@ class CompiledDAG:
         # Print edges
         ascii_visualization += "\nEdges Information:\n"
         for upstream_task, downstream_task, type_hint in edge_info:
-            if type_hint == "Nccl":
+            if type_hint == "Accelerator":
                 edgs_channel = "+++"
             else:
                 edgs_channel = "---"
@@ -2704,7 +2914,7 @@ class CompiledDAG:
 
         # Add the legend to the output
         ascii_visualization += "\nLegend:\n"
-        ascii_visualization += "+++> : Represents Nccl-type data channels\n"
+        ascii_visualization += "+++> : Represents Accelerator-type data channels\n"
         ascii_visualization += "---> : Represents Shared Memory data channels\n"
 
         # Find the maximum width (number of nodes in any layer)
@@ -2840,29 +3050,25 @@ class CompiledDAG:
         channel_details=False,
     ) -> str:
         """
-        Visualize the compiled graph using Graphviz.
-
-        For non-ASCII formats, the visualization will be saved to a file specified
-        by the `filename` argument.
-
-        This method generates a graphical representation of the compiled graph,
-        showing tasks and their dependencies.This method should be called
-        **after** the graph has been compiled using `experimental_compile()`.
+        Visualize the compiled graph by showing tasks and their dependencies.
+        This method should be called **after** the graph has been compiled using
+        `experimental_compile()`.
 
         Args:
-            filename: The name of the output file (without extension).
+            filename: For non-ASCII formats, the output file name (without extension).
+                For ASCII format, the visualization will be printed to the console,
+                and this argument is ignored.
             format: The format of the output file (e.g., 'png', 'pdf', 'ascii').
-            view: For non-ascii: Whether to open the file with the default viewer.
-                For ascii: Whether to print the visualization and return None
-                    or return the ascii visualization string directly.
+            view: For non-ASCII formats: Whether to open the file with the default
+                viewer. For ASCII format: Whether to print the visualization and return
+                None or return the ascii visualization string directly.
             channel_details: If True, adds channel details to edges.
 
         Returns:
-            str:
-                - For Graphviz-based formats (e.g., 'png', 'pdf', 'jpeg'), returns
-                the Graphviz DOT string representation of the compiled graph.
-                - For ASCII format, returns the ASCII string representation of the
-                compiled graph.
+            The string representation of the compiled graph. For Graphviz-based formats
+            (e.g., 'png', 'pdf', 'jpeg'), returns the Graphviz DOT string representation
+            of the compiled graph. For ASCII format, returns the ASCII string
+            representation of the compiled graph.
 
         Raises:
             ValueError: If the graph is empty or not properly compiled.
@@ -2887,11 +3093,11 @@ class CompiledDAG:
                 "You can install it by running `pip install graphviz`."
             )
         from ray.dag import (
+            ClassMethodNode,
+            DAGNode,
             InputAttributeNode,
             InputNode,
             MultiOutputNode,
-            ClassMethodNode,
-            DAGNode,
         )
 
         # Check that the DAG has been compiled
@@ -2975,10 +3181,15 @@ class CompiledDAG:
             # Add the node to the graph with attributes
             dot.node(str(idx), label, shape=shape, style=style, fillcolor=fillcolor)
             channel_type_str = (
-                type(dag_node.type_hint).__name__
-                if dag_node.type_hint
-                else "UnknownType"
-            ) + "\n"
+                (
+                    type(dag_node.type_hint).__name__
+                    if dag_node.type_hint
+                    else "UnknownType"
+                )
+                + "\n"
+                if channel_details
+                else None
+            )
 
             # This logic is built on the assumption that there will only be multiple
             # output channels if the task has multiple returns
@@ -2986,8 +3197,9 @@ class CompiledDAG:
             if len(task.output_channels) == 1:
                 for downstream_node in task.dag_node._downstream_nodes:
                     downstream_idx = self.dag_node_to_idx[downstream_node]
-                    edge_label = channel_type_str
+                    edge_label = None
                     if channel_details:
+                        edge_label = channel_type_str
                         edge_label += self.get_channel_details(
                             task.output_channels[0],
                             (
@@ -3003,8 +3215,9 @@ class CompiledDAG:
                 for output_channel, downstream_idx in zip(
                     task.output_channels, task.output_node_idxs
                 ):
-                    edge_label = channel_type_str
+                    edge_label = None
                     if channel_details:
+                        edge_label = channel_type_str
                         edge_label += self.get_channel_details(
                             output_channel,
                             task.dag_node._get_actor_handle()._actor_id.hex(),
@@ -3037,9 +3250,16 @@ class CompiledDAG:
             output.type_hint.register_custom_serializer()
 
     def teardown(self, kill_actors: bool = False):
-        """Teardown and cancel all actor tasks for this DAG. After this
+        """
+        Teardown and cancel all actor tasks for this DAG. After this
         function returns, the actors should be available to execute new tasks
-        or compile a new DAG."""
+        or compile a new DAG.
+
+        Note: This method is automatically called when the CompiledDAG is destructed
+        or the script exits. However, this should be explicitly called before compiling
+        another graph on the same actors. Python may not garbage collect the
+        CompiledDAG object immediately when you may expect.
+        """
         if self._is_teardown:
             return
 
@@ -3066,6 +3286,7 @@ def build_compiled_dag_from_ray_dag(
     buffer_size_bytes: Optional[int] = None,
     enable_asyncio: bool = False,
     max_inflight_executions: Optional[int] = None,
+    max_buffered_results: Optional[int] = None,
     overlap_gpu_communication: Optional[bool] = None,
     default_communicator: Optional[Union[Communicator, str]] = "create",
 ) -> "CompiledDAG":
@@ -3074,6 +3295,7 @@ def build_compiled_dag_from_ray_dag(
         buffer_size_bytes,
         enable_asyncio,
         max_inflight_executions,
+        max_buffered_results,
         overlap_gpu_communication,
         default_communicator,
     )

@@ -22,6 +22,7 @@
 #include <Winternl.h>
 #include <process.h>
 #else
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <stddef.h>
@@ -36,7 +37,10 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ray/util/cmd_line_utils.h"
@@ -48,7 +52,7 @@
 #ifdef __APPLE__
 extern char **environ;
 
-// macOS dosn't come with execvpe.
+// macOS doesn't come with execvpe.
 // https://stackoverflow.com/questions/7789750/execve-with-path-search
 int execvpe(const char *program, char *const argv[], char *const envp[]) {
   char **saved = environ;
@@ -64,6 +68,19 @@ int execvpe(const char *program, char *const argv[], char *const envp[]) {
 #endif
 
 namespace ray {
+
+#if !defined(_WIN32)
+void SetFdCloseOnExec(int fd) {
+  if (fd < 0) {
+    return;
+  }
+  int flags = fcntl(fd, F_GETFD, 0);
+  RAY_CHECK_NE(flags, -1) << "fcntl error: errno = " << errno << ", fd = " << fd;
+  const int ret = fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+  RAY_CHECK_NE(ret, -1) << "fcntl error: errno = " << errno << ", fd = " << fd;
+  RAY_LOG(DEBUG) << "set FD_CLOEXEC to fd " << fd;
+}
+#endif
 
 bool EnvironmentVariableLess::operator()(char a, char b) const {
   // TODO(mehrdadn): This is only used on Windows due to current lack of Unicode support.
@@ -89,7 +106,7 @@ class ProcessFD {
  public:
   ~ProcessFD();
   ProcessFD();
-  ProcessFD(pid_t pid, intptr_t fd = -1);
+  explicit ProcessFD(pid_t pid, intptr_t fd = -1);
   ProcessFD(ProcessFD &&other);
   ProcessFD &operator=(ProcessFD &&other);
 
@@ -105,7 +122,8 @@ class ProcessFD {
                             std::error_code &ec,
                             bool decouple,
                             const ProcessEnvironment &env,
-                            bool pipe_to_stdin) {
+                            bool pipe_to_stdin,
+                            std::function<void(const std::string &)> add_to_cgroup) {
     ec = std::error_code();
     intptr_t fd;
     pid_t pid;
@@ -191,6 +209,12 @@ class ProcessFD {
 
     pid = pipefds[1] != -1 ? fork() : -1;
 
+    // The process was forked successfully and we're executing in the child
+    // process.
+    if (pid == 0) {
+      add_to_cgroup(std::to_string(getpid()));
+    }
+
     // If we don't pipe to stdin close pipes that are not needed.
     if (pid <= 0 && pipefds[0] != -1) {
       close(pipefds[0]);  // not the parent, so close the read end of the pipe
@@ -199,6 +223,8 @@ class ProcessFD {
     if (pid != 0 && pipefds[1] != -1) {
       close(pipefds[1]);  // not the child, so close the write end of the pipe
       pipefds[1] = -1;
+      // make sure the read end of the pipe is closed on exec
+      SetFdCloseOnExec(pipefds[0]);
     }
 
     // Create a pipe and redirect the read pipe to a child's stdin.
@@ -210,11 +236,14 @@ class ProcessFD {
         // Child. Close sthe write end of the pipe from child.
         close(parent_lifetime_pipe[1]);
         parent_lifetime_pipe[1] = -1;
+        SetFdCloseOnExec(parent_lifetime_pipe[0]);
       }
       if (pid != 0 && parent_lifetime_pipe[0] != -1) {
         // Parent. Close the read end of the pipe.
         close(parent_lifetime_pipe[0]);
         parent_lifetime_pipe[0] = -1;
+        // Make sure the write end of the pipe is closed on exec.
+        SetFdCloseOnExec(parent_lifetime_pipe[1]);
       }
     } else {
       // parent_lifetime_pipe pipes are not used.
@@ -363,19 +392,22 @@ Process::Process(const char *argv[],
                  std::error_code &ec,
                  bool decouple,
                  const ProcessEnvironment &env,
-                 bool pipe_to_stdin) {
+                 bool pipe_to_stdin,
+                 std::function<void(const std::string &)> add_to_cgroup) {
   /// TODO: use io_service with boost asio notify_fork.
   (void)io_service;
 #ifdef __linux__
   KnownChildrenTracker::instance().AddKnownChild([&, this]() -> pid_t {
-    ProcessFD procfd = ProcessFD::spawnvpe(argv, ec, decouple, env, pipe_to_stdin);
+    ProcessFD procfd = ProcessFD::spawnvpe(
+        argv, ec, decouple, env, pipe_to_stdin, std::move(add_to_cgroup));
     if (!ec) {
       this->p_ = std::make_shared<ProcessFD>(std::move(procfd));
     }
     return this->GetId();
   });
 #else
-  ProcessFD procfd = ProcessFD::spawnvpe(argv, ec, decouple, env, pipe_to_stdin);
+  ProcessFD procfd = ProcessFD::spawnvpe(
+      argv, ec, decouple, env, pipe_to_stdin, std::move(add_to_cgroup));
   if (!ec) {
     p_ = std::make_shared<ProcessFD>(std::move(procfd));
   }
@@ -745,13 +777,18 @@ std::optional<std::vector<pid_t>> GetAllProcsWithPpid(pid_t parent_pid) {
 #endif
 }
 
+void QuickExit() {
+  ray::RayLog::ShutDownRayLog();
+  _Exit(1);
+}
+
 }  // namespace ray
 
 namespace std {
 
 bool equal_to<ray::Process>::operator()(const ray::Process &x,
                                         const ray::Process &y) const {
-  using namespace ray;
+  using namespace ray;  // NOLINT
   return !x.IsNull()
              ? !y.IsNull()
                    ? x.IsValid()
@@ -763,7 +800,7 @@ bool equal_to<ray::Process>::operator()(const ray::Process &x,
 }
 
 size_t hash<ray::Process>::operator()(const ray::Process &value) const {
-  using namespace ray;
+  using namespace ray;  // NOLINT
   return !value.IsNull() ? value.IsValid() ? hash<pid_t>()(value.GetId())
                                            : hash<void const *>()(value.Get())
                          : size_t();

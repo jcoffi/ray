@@ -1,6 +1,7 @@
 from collections import defaultdict
 from functools import partial
 import logging
+import math
 import time
 from typing import Collection, DefaultDict, List, Optional, Union
 
@@ -20,7 +21,7 @@ from ray.rllib.core import (
 )
 from ray.rllib.core.columns import Columns
 from ray.rllib.core.rl_module.rl_module import RLModule, RLModuleSpec
-from ray.rllib.env import INPUT_ENV_SPACES
+from ray.rllib.env import INPUT_ENV_SPACES, INPUT_ENV_SINGLE_SPACES
 from ray.rllib.env.env_context import EnvContext
 from ray.rllib.env.env_runner import EnvRunner, ENV_STEP_FAILURE
 from ray.rllib.env.single_agent_episode import SingleAgentEpisode
@@ -28,9 +29,10 @@ from ray.rllib.env.utils import _gym_env_creator
 from ray.rllib.utils import force_list
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.checkpoints import Checkpointable
-from ray.rllib.utils.deprecation import Deprecated
+from ray._common.deprecation import Deprecated
 from ray.rllib.utils.framework import get_device
 from ray.rllib.utils.metrics import (
+    ENV_TO_MODULE_CONNECTOR,
     EPISODE_DURATION_SEC_MEAN,
     EPISODE_LEN_MAX,
     EPISODE_LEN_MEAN,
@@ -38,6 +40,7 @@ from ray.rllib.utils.metrics import (
     EPISODE_RETURN_MAX,
     EPISODE_RETURN_MEAN,
     EPISODE_RETURN_MIN,
+    MODULE_TO_ENV_CONNECTOR,
     NUM_AGENT_STEPS_SAMPLED,
     NUM_AGENT_STEPS_SAMPLED_LIFETIME,
     NUM_ENV_STEPS_SAMPLED,
@@ -46,11 +49,11 @@ from ray.rllib.utils.metrics import (
     NUM_EPISODES_LIFETIME,
     NUM_MODULE_STEPS_SAMPLED,
     NUM_MODULE_STEPS_SAMPLED_LIFETIME,
+    RLMODULE_INFERENCE_TIMER,
     SAMPLE_TIMER,
     TIME_BETWEEN_SAMPLING,
     WEIGHTS_SEQ_NO,
 )
-from ray.rllib.utils.metrics.metrics_logger import MetricsLogger
 from ray.rllib.utils.spaces.space_utils import unbatch
 from ray.rllib.utils.typing import EpisodeID, ResultDict, StateDict
 from ray.tune.registry import ENV_CREATOR, _global_registry
@@ -73,14 +76,10 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
             config: An `AlgorithmConfig` object containing all settings needed to
                 build this `EnvRunner` class.
         """
-        super().__init__(config=config)
+        super().__init__(config=config, **kwargs)
 
-        self.worker_index: int = kwargs.get("worker_index")
-        self.num_workers: int = kwargs.get("num_workers", self.config.num_env_runners)
         self.tune_trial_id: str = kwargs.get("tune_trial_id")
-
-        # Create a MetricsLogger object for logging custom stats.
-        self.metrics = MetricsLogger()
+        self.spaces = kwargs.get("spaces", {})
 
         # Create our callbacks object.
         self._callbacks: List[RLlibCallback] = [
@@ -96,11 +95,17 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
         # Create the vectorized gymnasium env.
         self.env: Optional[gym.vector.VectorEnvWrapper] = None
         self.num_envs: int = 0
-        self.make_env()
+        if (
+            self.worker_index is None
+            or self.worker_index > 0
+            or self.config.create_env_on_local_worker
+            or self.config.num_env_runners == 0
+        ):
+            self.make_env()
 
         # Create the env-to-module connector pipeline.
         self._env_to_module = self.config.build_env_to_module_connector(
-            self.env, device=self._device
+            env=self.env, spaces=self.spaces, device=self._device
         )
         # Cached env-to-module results taken at the end of a `_sample_timesteps()`
         # call to make sure the final observation (before an episode cut) gets properly
@@ -117,7 +122,9 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
         self.make_module()
 
         # Create the module-to-env connector pipeline.
-        self._module_to_env = self.config.build_module_to_env_connector(self.env)
+        self._module_to_env = self.config.build_module_to_env_connector(
+            env=self.env, spaces=self.spaces
+        )
 
         # This should be the default.
         self._needs_initial_reset: bool = True
@@ -150,9 +157,9 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
 
         Args:
             num_timesteps: The number of timesteps to sample during this call.
-                Note that only one of `num_timetseps` or `num_episodes` may be provided.
+                Note that only one of `num_timesteps` or `num_episodes` may be provided.
             num_episodes: The number of episodes to sample during this call.
-                Note that only one of `num_timetseps` or `num_episodes` may be provided.
+                Note that only one of `num_timesteps` or `num_episodes` may be provided.
             explore: If True, will use the RLModule's `forward_exploration()`
                 method to compute actions. If False, will use the RLModule's
                 `forward_inference()` method. If None (default), will use the `explore`
@@ -170,6 +177,11 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
         Returns:
             A list of `SingleAgentEpisode` instances, carrying the sampled data.
         """
+        if self.env is None:
+            raise ValueError(
+                f"{self} doesn't have an env! Can't call `sample()` on it."
+            )
+
         assert not (num_timesteps is not None and num_episodes is not None)
 
         # Log time between `sample()` requests.
@@ -295,11 +307,13 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
                         self.metrics.peek(NUM_ENV_STEPS_SAMPLED_LIFETIME, default=0)
                         + ts
                     ) * (self.config.num_env_runners or 1)
-                    to_env = self.module.forward_exploration(
-                        to_module, t=global_env_steps_lifetime
-                    )
+                    with self.metrics.log_time(RLMODULE_INFERENCE_TIMER):
+                        to_env = self.module.forward_exploration(
+                            to_module, t=global_env_steps_lifetime
+                        )
                 else:
-                    to_env = self.module.forward_inference(to_module)
+                    with self.metrics.log_time(RLMODULE_INFERENCE_TIMER):
+                        to_env = self.module.forward_inference(to_module)
 
                 # Module-to-env connector.
                 to_env = self._module_to_env(
@@ -309,11 +323,12 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
                     explore=explore,
                     shared_data=shared_data,
                     metrics=self.metrics,
+                    metrics_prefix_key=(MODULE_TO_ENV_CONNECTOR,),
                 )
 
             # Extract the (vectorized) actions (to be sent to the env) from the
             # module/connector output. Note that these actions are fully ready (e.g.
-            # already unsquashed/clipped) to be sent to the environment) and might not
+            # already unsquashed/clipped) to be sent to the environment and might not
             # be identical to the actions produced by the RLModule/distribution, which
             # are the ones stored permanently in the episode objects.
             actions = to_env.pop(Columns.ACTIONS)
@@ -347,7 +362,7 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
 
                 # Call `add_env_step()` method on episode.
                 else:
-                    # Only increase ts when we actually stepped (not reset'd as a reset
+                    # Only increase ts when we actually stepped (not reset as a reset
                     # does not count as a timestep).
                     ts += 1
                     episodes[env_index].add_env_step(
@@ -360,7 +375,7 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
                         extra_model_outputs=extra_model_output,
                     )
 
-            # Env-to-module connector pass (cache results as we will do the RLModule
+            # Env-to-module connector pass cache results as we will do the RLModule
             # forward pass only in the next `while`-iteration.
             if self.module is not None:
                 self._cached_to_module = self._env_to_module(
@@ -369,6 +384,7 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
                     rl_module=self.module,
                     shared_data=shared_data,
                     metrics=self.metrics,
+                    metrics_prefix_key=(ENV_TO_MODULE_CONNECTOR,),
                 )
 
             for env_index in range(self.num_envs):
@@ -408,15 +424,7 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
 
                     # Create a new episode object with no data in it and execute
                     # `on_episode_created` callback (before the `env.reset()` call).
-                    episodes[env_index] = SingleAgentEpisode(
-                        observation_space=self.env.single_observation_space,
-                        action_space=self.env.single_action_space,
-                    )
-                    self._make_on_episode_callback(
-                        "on_episode_created",
-                        env_index,
-                        episodes,
-                    )
+                    self._new_episode(env_index, episodes)
 
         # Return done episodes ...
         self._done_episodes_for_metrics.extend(done_episodes_to_return)
@@ -434,7 +442,7 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
             ]
 
             for eps in self._episodes:
-                # Just started Episodes do not have to be returned. There is no data
+                # Just started episodes do not have to be returned. There is no data
                 # in them anyway.
                 if eps.t == 0:
                     continue
@@ -459,8 +467,14 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
 
     @override(EnvRunner)
     def get_spaces(self):
+        if self.env is None:
+            return self.spaces
         return {
             INPUT_ENV_SPACES: (self.env.observation_space, self.env.action_space),
+            INPUT_ENV_SINGLE_SPACES: (
+                self.env.single_observation_space,
+                self.env.single_action_space,
+            ),
             DEFAULT_MODULE_ID: (
                 self._env_to_module.observation_space,
                 self.env.single_action_space,
@@ -540,8 +554,8 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
             # update.
             weights_seq_no = state.get(WEIGHTS_SEQ_NO, 0)
 
-            # Only update the weigths, if this is the first synchronization or
-            # if the weights of this `EnvRunner` lacks behind the actual ones.
+            # Only update the weights, if this is the first synchronization or
+            # if the weights of this `EnvRunner` lag behind the actual ones.
             if weights_seq_no == 0 or self._weights_seq_no < weights_seq_no:
                 rl_module_state = state[COMPONENT_RL_MODULE]
                 if isinstance(rl_module_state, ray.ObjectRef):
@@ -595,13 +609,13 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
     def assert_healthy(self):
         """Checks that self.__init__() has been completed properly.
 
-        Ensures that the instances has a `MultiRLModule` and an
+        Ensures that the instance has a `MultiRLModule` and an
         environment defined.
 
         Raises:
             AssertionError: If the EnvRunner Actor has NOT been properly initialized.
         """
-        # Make sure, we have built our gym.vector.Env and RLModule properly.
+        # Make sure we have built our gym.vector.Env and RLModule properly.
         assert self.env and hasattr(self, "module")
 
     @override(EnvRunner)
@@ -612,8 +626,8 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
         `self.config.env_config`) and then call this method to create new environments
         with the updated configuration.
         """
-        # If an env already exists, try closing it first (to allow it to properly
-        # cleanup).
+        # If an env already exists, try closing it first
+        # to allow it to properly clean up.
         if self.env is not None:
             try:
                 self.env.close()
@@ -690,9 +704,10 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
 
     @override(EnvRunner)
     def make_module(self):
+        env = self.env.unwrapped if self.env is not None else None
         try:
             module_spec: RLModuleSpec = self.config.get_rl_module_spec(
-                env=self.env.unwrapped, spaces=self.get_spaces(), inference_only=True
+                env=env, spaces=self.get_spaces(), inference_only=True
             )
             # Build the module from its spec.
             self.module = module_spec.build()
@@ -711,7 +726,8 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
     @override(EnvRunner)
     def stop(self):
         # Close our env object via gymnasium's API.
-        self.env.close()
+        if self.env is not None:
+            self.env.close()
 
     def _reset_envs(self, episodes, shared_data, explore):
         # Create n new episodes and make the `on_episode_created` callbacks.
@@ -724,8 +740,12 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
         self._ongoing_episodes_for_metrics.clear()
 
         # Try resetting the environment.
-        # TODO (simon): Check, if we need here the seed from the config.
-        observations, infos = self._try_env_reset()
+        observations, infos = self._try_env_reset(
+            # Only seed (if seed provided) upon initial reset.
+            seed=self._seed if self._needs_initial_reset else None,
+            # TODO (sven): Support options?
+            options=None,
+        )
         observations = unbatch(observations)
 
         # Set initial obs and infos in the episodes.
@@ -745,6 +765,7 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
                 explore=explore,
                 shared_data=shared_data,
                 metrics=self.metrics,
+                metrics_prefix_key=(ENV_TO_MODULE_CONNECTOR,),
             )
 
         # Call `on_episode_start()` callbacks (always after reset).
@@ -759,19 +780,27 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
         )
         self._make_on_episode_callback("on_episode_created", env_index, episodes)
 
-    def _make_on_episode_callback(self, which: str, idx: int, episodes):
+    def _make_on_episode_callback(
+        self, which: str, idx: int, episodes: List[SingleAgentEpisode]
+    ):
+        kwargs = dict(
+            episode=episodes[idx],
+            env_runner=self,
+            metrics_logger=self.metrics,
+            env=self.env.unwrapped,
+            rl_module=self.module,
+            env_index=idx,
+        )
+        if which == "on_episode_end":
+            kwargs["prev_episode_chunks"] = self._ongoing_episodes_for_metrics[
+                episodes[idx].id_
+            ]
+
         make_callback(
             which,
             callbacks_objects=self._callbacks,
             callbacks_functions=getattr(self.config, f"callbacks_{which}"),
-            kwargs=dict(
-                episode=episodes[idx],
-                env_runner=self,
-                metrics_logger=self.metrics,
-                env=self.env.unwrapped,
-                rl_module=self.module,
-                env_index=idx,
-            ),
+            kwargs=kwargs,
         )
 
     def _increase_sampled_metrics(self, num_steps, num_episodes_completed):
@@ -823,19 +852,28 @@ class SingleAgentEnvRunner(EnvRunner, Checkpointable):
 
     def _log_episode_metrics(self, length, ret, sec):
         # Log general episode metrics.
-        # To mimic the old API stack behavior, we'll use `window` here for
-        # these particular stats (instead of the default EMA).
-        win = self.config.metrics_num_episodes_for_smoothing
+        # Use the configured window, but factor in the parallelism of the EnvRunners.
+        # As a result, we only log the last `window / num_env_runners` steps here,
+        # because everything gets parallel-merged in the Algorithm process.
+        win = max(
+            1,
+            int(
+                math.ceil(
+                    self.config.metrics_num_episodes_for_smoothing
+                    / (self.config.num_env_runners or 1)
+                )
+            ),
+        )
         self.metrics.log_value(EPISODE_LEN_MEAN, length, window=win)
         self.metrics.log_value(EPISODE_RETURN_MEAN, ret, window=win)
         self.metrics.log_value(EPISODE_DURATION_SEC_MEAN, sec, window=win)
         # Per-agent returns.
         self.metrics.log_value(
-            ("agent_episode_returns_mean", DEFAULT_AGENT_ID), ret, window=win
+            ("agent_episode_return_mean", DEFAULT_AGENT_ID), ret, window=win
         )
         # Per-RLModule returns.
         self.metrics.log_value(
-            ("module_episode_returns_mean", DEFAULT_MODULE_ID), ret, window=win
+            ("module_episode_return_mean", DEFAULT_MODULE_ID), ret, window=win
         )
 
         # For some metrics, log min/max as well.

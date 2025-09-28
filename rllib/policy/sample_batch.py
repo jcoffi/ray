@@ -12,7 +12,7 @@ import tree  # pip install dm_tree
 from ray.rllib.core.columns import Columns
 from ray.rllib.utils.annotations import DeveloperAPI, ExperimentalAPI, PublicAPI
 from ray.rllib.utils.compression import pack, unpack, is_compressed
-from ray.rllib.utils.deprecation import Deprecated, deprecation_warning
+from ray._common.deprecation import Deprecated, deprecation_warning
 from ray.rllib.utils.framework import try_import_tf, try_import_torch
 from ray.rllib.utils.torch_utils import convert_to_torch_tensor
 from ray.rllib.utils.typing import (
@@ -55,7 +55,7 @@ def attempt_count_timesteps(tensor_dict: dict):
         and len(seq_lens) > 0
     ):
         if torch and torch.is_tensor(seq_lens):
-            return seq_lens.sum().item()
+            return int(seq_lens.sum().item())
         else:
             return int(sum(seq_lens))
 
@@ -1664,7 +1664,7 @@ def concat_samples(samples: List[SampleBatchType]) -> SampleBatchType:
             s.max_seq_len is None or max_seq_len is None
         ) and s.max_seq_len != max_seq_len:
             raise ValueError(
-                "Samples must consistently either provide or omit " "`max_seq_len`!"
+                "Samples must consistently either provide or omit `max_seq_len`!"
             )
         elif zero_padded and s.max_seq_len != max_seq_len:
             raise ValueError(

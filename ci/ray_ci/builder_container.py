@@ -21,6 +21,7 @@ PYTHON_VERSIONS = {
     "3.10": PythonVersionInfo(bin_path="cp310-cp310"),
     "3.11": PythonVersionInfo(bin_path="cp311-cp311"),
     "3.12": PythonVersionInfo(bin_path="cp312-cp312"),
+    "3.13": PythonVersionInfo(bin_path="cp313-cp313"),
 }
 DEFAULT_PYTHON_VERSION = "3.9"
 DEFAULT_BUILD_TYPE = "optimized"
@@ -61,6 +62,7 @@ class BuilderContainer(LinuxContainer):
             f"./ci/build/build-manylinux-wheel.sh {self.bin_path}",
             "chown -R 2000:100 /artifact-mount",
         ]
+
         if self.upload:
             cmds += ["./ci/build/copy_build_artifacts.sh wheel"]
         self.run_script(cmds)

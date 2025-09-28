@@ -20,23 +20,33 @@
 #include <cstdlib>
 #include <filesystem>
 #include <future>
+#include <string>
 #include <string_view>
 
-#include "ray/common/test/testing.h"
+#include "absl/strings/str_format.h"
+#include "ray/common/id.h"
+#include "ray/common/tests/testing.h"
 #include "ray/util/filesystem.h"
+#include "ray/util/scoped_env_setter.h"
 #include "ray/util/temporary_directory.h"
-#include "ray/util/util.h"
 
 namespace ray {
 
 namespace {
 
+inline std::string RandomID() { return UniqueID::FromRandom().Hex(); }
+
 constexpr std::string_view kLogLine1 = "hello\n";
 constexpr std::string_view kLogLine2 = "world\n";
 
-TEST(PipeLoggerTest, RedirectionTest) {
+class PipeLoggerTest : public ::testing::TestWithParam<size_t> {};
+
+TEST_P(PipeLoggerTest, RedirectionTest) {
+  const std::string pipe_buffer_size = absl::StrFormat("%d", GetParam());
+  ScopedEnvSetter scoped_env_setter{"RAY_pipe_logger_read_buf_size",
+                                    pipe_buffer_size.data()};
   ScopedTemporaryDirectory scoped_directory;
-  const auto test_file_path = scoped_directory.GetDirectory() / GenerateUUIDV4();
+  const auto test_file_path = scoped_directory.GetDirectory() / RandomID();
 
   // Take the default option, which doesn't have rotation enabled.
   StreamRedirectionOption stream_redirection_opt{};
@@ -53,9 +63,12 @@ TEST(PipeLoggerTest, RedirectionTest) {
   EXPECT_EQ(*actual_content, expected_content);
 }
 
-TEST(PipeLoggerTestWithTee, RedirectionWithTee) {
+TEST_P(PipeLoggerTest, RedirectionWithTee) {
+  const std::string pipe_buffer_size = absl::StrFormat("%d", GetParam());
+  ScopedEnvSetter scoped_env_setter{"RAY_pipe_logger_read_buf_size",
+                                    pipe_buffer_size.data()};
   ScopedTemporaryDirectory scoped_directory;
-  const auto test_file_path = scoped_directory.GetDirectory() / GenerateUUIDV4();
+  const auto test_file_path = scoped_directory.GetDirectory() / RandomID();
 
   StreamRedirectionOption stream_redirection_opt{};
   stream_redirection_opt.file_path = test_file_path.string();
@@ -79,9 +92,12 @@ TEST(PipeLoggerTestWithTee, RedirectionWithTee) {
   EXPECT_EQ(*actual_content, absl::StrFormat("%s%s", kLogLine1, kLogLine2));
 }
 
-TEST(PipeLoggerTestWithTee, RotatedRedirectionWithTee) {
+TEST_P(PipeLoggerTest, RotatedRedirectionWithTee) {
+  const std::string pipe_buffer_size = absl::StrFormat("%d", GetParam());
+  ScopedEnvSetter scoped_env_setter{"RAY_pipe_logger_read_buf_size",
+                                    pipe_buffer_size.data()};
   ScopedTemporaryDirectory scoped_directory;
-  const auto uuid = GenerateUUIDV4();
+  const auto uuid = RandomID();
   const auto test_file_path = scoped_directory.GetDirectory() / uuid;
   const auto log_file_path1 = test_file_path;
   const auto log_file_path2 =
@@ -115,14 +131,18 @@ TEST(PipeLoggerTestWithTee, RotatedRedirectionWithTee) {
   EXPECT_EQ(*actual_content2, kLogLine1);
 }
 
-// Testing senario: log to stdout and file; check whether these two sinks generate
+// Testing scenario: log to stdout and file; check whether these two sinks generate
 // expected output.
-TEST(PipeLoggerCompatTest, CompatibilityTest) {
+TEST_P(PipeLoggerTest, CompatibilityTest) {
+  const std::string pipe_buffer_size = absl::StrFormat("%d", GetParam());
+  ScopedEnvSetter scoped_env_setter{"RAY_pipe_logger_read_buf_size",
+                                    pipe_buffer_size.data()};
+
   // Testing-1: No newliner in the middle nor at the end.
   {
     constexpr std::string_view kContent = "hello";
     ScopedTemporaryDirectory scoped_directory;
-    const auto test_file_path = scoped_directory.GetDirectory() / GenerateUUIDV4();
+    const auto test_file_path = scoped_directory.GetDirectory() / RandomID();
 
     StreamRedirectionOption logging_option{};
     logging_option.file_path = test_file_path.string();
@@ -148,7 +168,7 @@ TEST(PipeLoggerCompatTest, CompatibilityTest) {
   {
     constexpr std::string_view kContent = "hello\n";
     ScopedTemporaryDirectory scoped_directory;
-    const auto test_file_path = scoped_directory.GetDirectory() / GenerateUUIDV4();
+    const auto test_file_path = scoped_directory.GetDirectory() / RandomID();
 
     StreamRedirectionOption logging_option{};
     logging_option.file_path = test_file_path.string();
@@ -173,7 +193,7 @@ TEST(PipeLoggerCompatTest, CompatibilityTest) {
   {
     constexpr std::string_view kContent = "hello\nworld";
     ScopedTemporaryDirectory scoped_directory;
-    const auto test_file_path = scoped_directory.GetDirectory() / GenerateUUIDV4();
+    const auto test_file_path = scoped_directory.GetDirectory() / RandomID();
 
     StreamRedirectionOption logging_option{};
     logging_option.file_path = test_file_path.string();
@@ -199,7 +219,7 @@ TEST(PipeLoggerCompatTest, CompatibilityTest) {
   {
     constexpr std::string_view kContent = "hello\nworld\n";
     ScopedTemporaryDirectory scoped_directory;
-    const auto test_file_path = scoped_directory.GetDirectory() / GenerateUUIDV4();
+    const auto test_file_path = scoped_directory.GetDirectory() / RandomID();
 
     StreamRedirectionOption logging_option{};
     logging_option.file_path = test_file_path.string();
@@ -224,7 +244,7 @@ TEST(PipeLoggerCompatTest, CompatibilityTest) {
   {
     constexpr std::string_view kContent = "helloworld\n\n\n";
     ScopedTemporaryDirectory scoped_directory;
-    const auto test_file_path = scoped_directory.GetDirectory() / GenerateUUIDV4();
+    const auto test_file_path = scoped_directory.GetDirectory() / RandomID();
 
     StreamRedirectionOption logging_option{};
     logging_option.file_path = test_file_path.string();
@@ -249,7 +269,7 @@ TEST(PipeLoggerCompatTest, CompatibilityTest) {
   {
     constexpr std::string_view kContent = "hello\n\n\nworld";
     ScopedTemporaryDirectory scoped_directory;
-    const auto test_file_path = scoped_directory.GetDirectory() / GenerateUUIDV4();
+    const auto test_file_path = scoped_directory.GetDirectory() / RandomID();
 
     StreamRedirectionOption logging_option{};
     logging_option.file_path = test_file_path.string();
@@ -275,7 +295,7 @@ TEST(PipeLoggerCompatTest, CompatibilityTest) {
   {
     constexpr std::string_view kContent = "hello\n\nworld\n\n";
     ScopedTemporaryDirectory scoped_directory;
-    const auto test_file_path = scoped_directory.GetDirectory() / GenerateUUIDV4();
+    const auto test_file_path = scoped_directory.GetDirectory() / RandomID();
 
     StreamRedirectionOption logging_option{};
     logging_option.file_path = test_file_path.string();
@@ -297,6 +317,8 @@ TEST(PipeLoggerCompatTest, CompatibilityTest) {
     EXPECT_TRUE(std::filesystem::remove(test_file_path));
   }
 }
+
+INSTANTIATE_TEST_SUITE_P(PipeLoggerTest, PipeLoggerTest, testing::Values(1024, 3));
 
 }  // namespace
 

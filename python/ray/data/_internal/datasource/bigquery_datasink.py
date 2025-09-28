@@ -77,7 +77,7 @@ class BigQueryDatasink(Datasink[None]):
 
             block = BlockAccessor.for_block(block).to_arrow()
 
-            client = bigquery_datasource._create_client(project=project_id)
+            client = bigquery_datasource._create_client(project_id=project_id)
             job_config = bigquery.LoadJobConfig(autodetect=True)
             job_config.source_format = bigquery.SourceFormat.PARQUET
             job_config.write_disposition = bigquery.WriteDisposition.WRITE_APPEND
@@ -95,7 +95,7 @@ class BigQueryDatasink(Datasink[None]):
                     try:
                         logger.info(job.result())
                         break
-                    except exceptions.Forbidden as e:
+                    except (exceptions.Forbidden, exceptions.TooManyRequests) as e:
                         retry_cnt += 1
                         if retry_cnt > self.max_retry_cnt:
                             break

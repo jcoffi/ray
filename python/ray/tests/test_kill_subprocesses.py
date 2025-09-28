@@ -1,12 +1,16 @@
-import ray
-import pytest
-import multiprocessing
-import subprocess
-import time
-import psutil
 import logging
+import multiprocessing
 import os
+import subprocess
 import sys
+import time
+
+import pytest
+
+import ray
+from ray._common.test_utils import wait_for_condition
+
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -137,12 +141,9 @@ def test_default_sigchld_handler(enable_subreaper, shutdown_only):
             """
             process = subprocess.Popen(["true"])
             pid = process.pid
-            time.sleep(1)  # wait for the process to exit.
-
-            process.wait()
-            # after reaping, it's gone.
-            with pytest.raises(psutil.NoSuchProcess):
-                psutil.Process(pid)
+            wait_for_condition(
+                lambda: not psutil.pid_exists(pid), retry_interval_ms=100
+            )
 
         def manual_reap(self):
             """

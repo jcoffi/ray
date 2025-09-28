@@ -16,8 +16,12 @@
 
 #include <gtest/gtest_prod.h>
 
+#include <algorithm>
 #include <boost/container_hash/hash.hpp>
+#include <memory>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/time/time.h"
@@ -48,18 +52,18 @@ RetriableFIFOWorkerKillingPolicy::SelectWorkerToKill(
             sorted.end(),
             [](std::shared_ptr<WorkerInterface> const &left,
                std::shared_ptr<WorkerInterface> const &right) -> bool {
-              // First sort by retriable tasks and then by task time in ascending order.
+              // First sort by retriable leases and then by lease time in ascending order.
               int left_retriable =
-                  left->GetAssignedTask().GetTaskSpecification().IsRetriable() ? 0 : 1;
+                  left->GetGrantedLease().GetLeaseSpecification().IsRetriable() ? 0 : 1;
               int right_retriable =
-                  right->GetAssignedTask().GetTaskSpecification().IsRetriable() ? 0 : 1;
+                  right->GetGrantedLease().GetLeaseSpecification().IsRetriable() ? 0 : 1;
               if (left_retriable == right_retriable) {
-                return left->GetAssignedTaskTime() < right->GetAssignedTaskTime();
+                return left->GetGrantedLeaseTime() < right->GetGrantedLeaseTime();
               }
               return left_retriable < right_retriable;
             });
 
-  const static int32_t max_to_print = 10;
+  static const int32_t max_to_print = 10;
   RAY_LOG(INFO) << "The top 10 workers to be killed based on the worker killing policy:\n"
                 << WorkerKillingPolicy::WorkersDebugString(
                        sorted, max_to_print, system_memory);

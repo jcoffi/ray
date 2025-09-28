@@ -18,12 +18,16 @@
 #include <grpcpp/grpcpp.h>
 
 #include <boost/asio.hpp>
+#include <memory>
+#include <string>
+#include <utility>
 
 #include "ray/common/asio/asio_chaos.h"
 #include "ray/common/asio/instrumented_io_context.h"
 #include "ray/common/grpc_util.h"
 #include "ray/common/id.h"
 #include "ray/common/status.h"
+#include "ray/rpc/rpc_callback_types.h"
 #include "ray/stats/metric.h"
 #include "ray/stats/metric_defs.h"
 
@@ -49,16 +53,6 @@ void DrainServerCallExecutor();
 /// you need to regenerate the executor
 /// because they are global.
 void ResetServerCallExecutor();
-
-/// Represents the callback function to be called when a `ServiceHandler` finishes
-/// handling a request.
-/// \param status The status would be returned to client.
-/// \param success Success callback which will be invoked when the reply is successfully
-/// sent to the client.
-/// \param failure Failure callback which will be invoked when the reply fails to be
-/// sent to the client.
-using SendReplyCallback = std::function<void(
-    Status status, std::function<void()> success, std::function<void()> failure)>;
 
 /// Represents state of a `ServerCall`.
 enum class ServerCallState {
@@ -105,9 +99,6 @@ class ServerCall {
  public:
   /// Get the state of this `ServerCall`.
   virtual ServerCallState GetState() const = 0;
-
-  /// Set state of this `ServerCall`.
-  virtual void SetState(const ServerCallState &new_state) = 0;
 
   /// Handle the requst. This is the callback function to be called by
   /// `GrpcServer` when the request is received.
@@ -191,18 +182,14 @@ class ServerCallImpl : public ServerCall {
         start_time_(0),
         record_metrics_(record_metrics) {
     reply_ = google::protobuf::Arena::CreateMessage<Reply>(&arena_);
-    // TODO call_name_ sometimes get corrunpted due to memory issues.
+    // TODO(Yi Cheng) call_name_ sometimes get corrunpted due to memory issues.
     RAY_CHECK(!call_name_.empty()) << "Call name is empty";
     if (record_metrics_) {
       ray::stats::STATS_grpc_server_req_new.Record(1.0, call_name_);
     }
   }
 
-  ~ServerCallImpl() override = default;
-
   ServerCallState GetState() const override { return state_; }
-
-  void SetState(const ServerCallState &new_state) override { state_ = new_state; }
 
   void HandleRequest() override {
     stats_handle_ = io_service_.stats().RecordStart(call_name_);
@@ -238,7 +225,7 @@ class ServerCallImpl : public ServerCall {
                        call_name_ + ".HandleRequestImpl",
                        // Implement the delay of the rpc server call as the
                        // delay of HandleRequestImpl().
-                       ray::asio::testing::get_delay_us(call_name_));
+                       ray::asio::testing::GetDelayUs(call_name_));
     } else {
       // Handle service for rpc call has stopped, we must handle the call here
       // to send reply and remove it from cq
@@ -253,18 +240,18 @@ class ServerCallImpl : public ServerCall {
 
   void HandleRequestImpl(bool auth_success) {
     if constexpr (std::is_base_of_v<DelayedServiceHandler, ServiceHandler>) {
-      service_handler_.WaitUntilInitialized();
+      if (!service_handler_initialized_) {
+        service_handler_.WaitUntilInitialized();
+        service_handler_initialized_ = true;
+      }
     }
     state_ = ServerCallState::PROCESSING;
-    // NOTE(hchen): This `factory` local variable is needed. Because `SendReply` runs in
-    // a different thread, and will cause `this` to be deleted.
-    const auto &factory = factory_;
-    if (factory.GetMaxActiveRPCs() == -1) {
+    if (factory_.GetMaxActiveRPCs() == -1) {
       // Create a new `ServerCall` to accept the next incoming request.
       // We create this before handling the request only when no back pressure limit is
       // set. So that the it can be populated by the completion queue in the background if
       // a new request comes in.
-      factory.CreateCall();
+      factory_.CreateCall();
     }
     if (!auth_success) {
       boost::asio::post(GetServerCallExecutor(), [this]() {
@@ -293,10 +280,12 @@ class ServerCallImpl : public ServerCall {
   void OnReplySent() override {
     if (record_metrics_) {
       ray::stats::STATS_grpc_server_req_finished.Record(1.0, call_name_);
+      ray::stats::STATS_grpc_server_req_succeeded.Record(1.0, call_name_);
     }
     if (send_reply_success_callback_ && !io_service_.stopped()) {
-      auto callback = std::move(send_reply_success_callback_);
-      io_service_.post([callback]() { callback(); }, call_name_ + ".success_callback");
+      io_service_.post(
+          [callback = std::move(send_reply_success_callback_)]() { callback(); },
+          call_name_ + ".success_callback");
     }
     LogProcessTime();
   }
@@ -304,10 +293,12 @@ class ServerCallImpl : public ServerCall {
   void OnReplyFailed() override {
     if (record_metrics_) {
       ray::stats::STATS_grpc_server_req_finished.Record(1.0, call_name_);
+      ray::stats::STATS_grpc_server_req_failed.Record(1.0, call_name_);
     }
     if (send_reply_failure_callback_ && !io_service_.stopped()) {
-      auto callback = std::move(send_reply_failure_callback_);
-      io_service_.post([callback]() { callback(); }, call_name_ + ".failure_callback");
+      io_service_.post(
+          [callback = std::move(send_reply_failure_callback_)]() { callback(); },
+          call_name_ + ".failure_callback");
     }
     LogProcessTime();
   }
@@ -347,6 +338,9 @@ class ServerCallImpl : public ServerCall {
 
   /// The service handler that handles the request.
   ServiceHandler &service_handler_;
+
+  // A boolean to track if the service handler has been initialized.
+  bool service_handler_initialized_ = false;
 
   /// Pointer to the service handler function.
   HandleRequestFunction<ServiceHandler, Request, Reply> handle_request_function_;

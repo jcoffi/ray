@@ -51,7 +51,7 @@ config = (
         # The number of iterations to be run per learner when in multi-learner
         # mode in a single RLlib training iteration. Leave this to `None` to
         # run an entire epoch on the dataset during a single RLlib training
-        # iteration. For single-learner mode, 1 is the only option.
+        # iteration.
         dataset_num_iters_per_learner=5,
     )
     .training(
@@ -76,7 +76,7 @@ config = (
 if not args.no_tune:
     warnings.warn(
         "You are running the example with Ray Tune. Offline RL uses "
-        "Ray Data, which doesn't does not interact seamlessly with Ray Tune. "
+        "Ray Data, which doesn't interact seamlessly with Ray Tune. "
         "If you encounter difficulties try to run the example without "
         "Ray Tune using `--no-tune`."
     )
@@ -85,6 +85,7 @@ stop = {
     f"{EVALUATION_RESULTS}/{ENV_RUNNER_RESULTS}/{EPISODE_RETURN_MEAN}": 350.0,
     TRAINING_ITERATION: 350,
 }
+
 
 if __name__ == "__main__":
     run_rllib_example_script_experiment(config, args, stop=stop)
