@@ -360,6 +360,7 @@ fi
 
 
 if [ "$NODETYPE" = "head" ]; then
+  echo "$NODETYPE"
   node_name='-Cnode.name=nexus \\'
   node_master='-Cnode.master=true \\'
   node_data='-Cnode.data=false \\'
