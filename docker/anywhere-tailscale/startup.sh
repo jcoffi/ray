@@ -365,8 +365,9 @@ if [ "$NODETYPE" = "head" ]; then
   node_master='-Cnode.master=true \\'
   node_data='-Cnode.data=false \\'
 
-
-  ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net --system-config='{"gcs_storage": "redis"}' #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
+  sudo tailscale funnel --reset
+  
+  ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net --system-config='{"gcs_storage": "redis"}' &#--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
 
   #sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
   #sudo tailscale funnel --bg --tcp 6379 tcp://localhost:6379
