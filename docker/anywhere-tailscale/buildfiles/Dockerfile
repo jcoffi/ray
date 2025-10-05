@@ -1,7 +1,7 @@
 ARG IMAGETYPE=cpu
 ARG TS_AUTHKEY
 ARG TSAPIKEY
-FROM rayproject/ray:latest-py310-$IMAGETYPE
+FROM rayproject/ray:latest-py312-$IMAGETYPE
 ENV __MODIN_AUTOIMPORT_PANDAS__=1 \
         MODIN_ENGINE=ray \
         MODIN_RAY_CLUSTER=True \
