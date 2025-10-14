@@ -77,24 +77,14 @@ RUN --mount=type=cache,target=/var/cache/apt sudo apt update \
 && sudo mv crash_standalone_latest /usr/local/bin/crash \
 && sudo chmod +x /usr/local/bin/crash \
 && $HOME/anaconda3/bin/pip install --no-cache-dir -U pip \
-        cupy-cuda12x \
-        pyarrow-hotfix \
         'pandas[performance]' \
         pandas_market_calendars \
         modin[ray] \
         sqlalchemy-cratedb \
         'dask[distributed]' \
-        sympy \
-        'scipy>=1.13' \
-        scikit-learn \
-        statsmodels \
         datetime \
         geojson \
         fredapi \
-        'alpaca_py>=0.20.02' \
-        tiingo \
-        eodhd \
-        openai \
         google-api-python-client \
         gcsfs \
         google-cloud-storage \
