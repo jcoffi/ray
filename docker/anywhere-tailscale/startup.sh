@@ -370,6 +370,7 @@ if [ "$NODETYPE" = "head" ]; then
   ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
   #ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
   sudo tailscale funnel --bg --https 443 http://localhost:8265
+  sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
   #sudo tailscale funnel --bg --tcp 6379 tcp://localhost:6379
   #sudo tailscale funnel --bg --tcp 10001 tcp://$HOSTNAME:10001
   #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
@@ -393,7 +394,7 @@ elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
   node_voting_only='-Cnode.voting_only=false \\'
   discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
 
-
+  sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
   ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME #--object-store-memory=$ray_object_store
 
 
@@ -438,7 +439,7 @@ else
     #  ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME
     #   #ssh -N -L localhost:6379:localhost:1055 $USER@localhost
     # else
-
+    sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
     ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME
     # fi
     echo "Done"
