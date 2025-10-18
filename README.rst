@@ -67,6 +67,7 @@ With Ray, you can seamlessly scale the same code from a laptop to a cluster. Ray
 
 More Information
 ----------------
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/jcoffi/ray)
 
 - `Documentation`_
 - `Ray Architecture whitepaper`_
@@ -138,4 +139,3 @@ Getting Involved
 .. _`Meetup Group`: https://www.meetup.com/Bay-Area-Ray-Meetup/
 .. _`Twitter`: https://x.com/raydistributed
 .. _`Slack`: https://www.ray.io/join-slack?utm_source=github&utm_medium=ray_readme&utm_campaign=getting_involved
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/jcoffi/ray)
