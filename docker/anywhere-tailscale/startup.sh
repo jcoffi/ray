@@ -397,7 +397,7 @@ elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
   discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
 
   sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
-  ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--object-store-memory=$ray_object_store
+  ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--object-store-memory=$ray_object_store
 
 
 elif [ "$NODETYPE" = "user" ]; then
@@ -414,7 +414,7 @@ elif [ "$NODETYPE" = "user" ]; then
   sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
   #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
 
-  ray start --address='nexus:6379' --num-cpus=1 --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net &
+  ray start --address='100.100.34.79:6379' --num-cpus=1 --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net &
 
   if [ -e "/files" ]; then
     sudo chgrp -R crate /files
@@ -442,7 +442,7 @@ else
     #   #ssh -N -L localhost:6379:localhost:1055 $USER@localhost
     # else
     sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
-    ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net
+    ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net
     # fi
     echo "Done"
     #sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
