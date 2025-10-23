@@ -367,8 +367,8 @@ if [ "$NODETYPE" = "head" ]; then
 
   sudo tailscale funnel reset
 
-  ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10001 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
-  #ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
+  ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10001 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
+  #ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
   sudo tailscale funnel --bg --https 443 http://localhost:8265
   sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
  # sudo tailscale funnel --bg --tcp 6379 tcp://localhost:6379 #not used anymore.
@@ -385,7 +385,7 @@ if [ "$NODETYPE" = "head" ]; then
 #   echo "search chimp-beta.ts.net" | sudo tee -a /etc/resolv.conf
 #   # #There isn't a tun so we can't create a tunnel interface. So we've told cratedb to use eth0.
 #   sudo sed -i "s/_tailscale0_/_eth0_/g" /crate/config/crate.yml
-#   ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $IPADDRESS --node-name $HOSTNAME #--object-store-memory=$ray_object_store
+#   ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $IPADDRESS --node-name $HOSTNAME.chimp-beta.ts.net #--object-store-memory=$ray_object_store
 
 
 elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
@@ -395,7 +395,7 @@ elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
   discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
 
   sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
-  ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME #--object-store-memory=$ray_object_store
+  ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--object-store-memory=$ray_object_store
 
 
 elif [ "$NODETYPE" = "user" ]; then
@@ -412,7 +412,7 @@ elif [ "$NODETYPE" = "user" ]; then
   sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
   #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
 
-  ray start --address='nexus:6379' --num-cpus=1 --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME &
+  ray start --address='nexus:6379' --num-cpus=1 --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net &
 
   if [ -e "/files" ]; then
     sudo chgrp -R crate /files
@@ -436,11 +436,11 @@ elif [ "$NODETYPE" = "user" ]; then
 else
 
     # if [ ! "$LOCATION" = "OnPrem" ] && [ $ALL_PROXY ]; then
-    #  ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME
+    #  ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net
     #   #ssh -N -L localhost:6379:localhost:1055 $USER@localhost
     # else
     sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
-    ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME --node-name $HOSTNAME
+    ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net
     # fi
     echo "Done"
     sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
