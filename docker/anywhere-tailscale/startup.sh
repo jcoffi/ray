@@ -285,7 +285,7 @@ else
     echo 'http.proxy.host:localhost' | sudo tee -a /crate/config/crate.yml
     echo 'http.proxy.port:1055' | sudo tee -a /crate/config/crate.yml
     #export CRATE_JAVA_OPTS="-DsocksProxyHost=localhost -DsocksProxyPort=1055 $CRATE_JAVA_OPTS"
-    #export RAY_grpc_enable_http_proxy="1"
+    export RAY_grpc_enable_http_proxy="1"
 fi
 
 
