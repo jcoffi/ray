@@ -340,6 +340,8 @@ while [ ! $tailscale_status = "Running" ]
         tailscale_status="$(tailscale status -json | jq -r .BackendState)"
 done
 
+sudo tailscale funnel reset
+
 #current_node_master=$(crash --hosts ${CLUSTERHOSTS} -c "SELECT n.hostname FROM sys.cluster c JOIN sys.nodes n ON c.master_node = n.id;" --format raw | jq -r '.rows[] | .[0]')
 #export CURRENTNODEMASTER="$(crash --hosts ${CLUSTERHOSTS} -c "SELECT n.hostname FROM sys.cluster c JOIN sys.nodes n ON c.master_node = n.id;" --format raw | jq -r '.rows[] | .[0]')"
 
@@ -365,7 +367,7 @@ if [ "$NODETYPE" = "head" ]; then
   node_master='-Cnode.master=true \\'
   node_data='-Cnode.data=false \\'
 
-  sudo tailscale funnel reset
+
 
   ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10001 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
   #ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
@@ -443,7 +445,7 @@ else
     ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net
     # fi
     echo "Done"
-    sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
+    #sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
 
 fi
 
