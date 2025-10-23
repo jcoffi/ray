@@ -104,8 +104,8 @@ RUN --mount=type=cache,target=/var/cache/apt sudo apt update \
 #for direct connections from tailscale
 EXPOSE 41641/udp
 #for external healthchecks
-EXPOSE 80/tcp
+#EXPOSE 80/tcp
 
 ENTRYPOINT [ "/bin/bash", "-c", "curl -o /tmp/startup.sh https://raw.githubusercontent.com/jcoffi/ray/cluster-anywhere/docker/anywhere-tailscale/startup.sh && chmod +x /tmp/startup.sh && /tmp/startup.sh" ]
-HEALTHCHECK --interval=60s --timeout=59s --start-period=300s --retries=4 \
-CMD sh /home/ray/run_tests.sh
+#HEALTHCHECK --interval=60s --timeout=59s --start-period=300s --retries=4 \
+#CMD sh /home/ray/run_tests.sh
