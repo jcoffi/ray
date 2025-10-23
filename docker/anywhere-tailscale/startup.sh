@@ -53,7 +53,7 @@ ray_object_store=$(echo "scale=0; $memory * 1024 * .40 / 1" | bc)
 
 
 #settings number of cpus for optimial (local) speed
-#export NUMEXPR_MAX_THREADS="$(nproc)"
+export NUMEXPR_MAX_THREADS="1"
 #used by conda to specify cpus for building packages
 export MAKEFLAGS="-j$(nproc)"
 #used by conda
