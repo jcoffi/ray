@@ -207,7 +207,7 @@ if [ -d "$TS_STATEDIR/certs/" ] && [ ! -e "/data/certs" ]; then
   sudo ln -s ./tailscale/certs/ certs
   cd ~
   # add in code to search and remove the machine name from tailscale if it already exists
-  deviceid=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$HOSTNAME'")' | jq -r .id)
+  deviceid=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$(hostname -s)'")' | jq -r .id)
   export deviceid=$deviceid
 
   echo "Deleting the device from Tailscale"
@@ -252,8 +252,8 @@ function get_cluster_hosts() {
 export CLUSTERHOSTS="$(get_cluster_hosts)"
 #export CLUSTERNODES="$(echo $CLUSTERHOSTS | sed 's/.chimp-beta.ts.net/:4300/g')"
 
-if [ ! -c $TS_STATEDIR ] && echo $CLUSTERHOSTS | grep -q $HOSTNAME ; then
-  deviceid=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$HOSTNAME'")' | jq -r .id)
+if [ ! -c $TS_STATEDIR ] && echo $CLUSTERHOSTS | grep -q $(hostname -s) ; then
+  deviceid=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$(hostname -s)'")' | jq -r .id)
   export deviceid=$deviceid
 
   echo "Deleting the device from Tailscale"
@@ -281,7 +281,7 @@ else
     export HTTP_PROXY=http://localhost:1055/
     export https_proxy=http://localhost:1055/
     export HTTPS_PROXY=http://localhost:1055/
-    #thisdevicesips=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$HOSTNAME'")' | jq -r .addresses[] | awk '/:/ {print "["$0"]"; next} 1' | paste -sd, -)
+    #thisdevicesips=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$(hostname -s)'")' | jq -r .addresses[] | awk '/:/ {print "["$0"]"; next} 1' | paste -sd, -)
     sudo sed -i "s/_tailscale0_/_eth0_/g" /crate/config/crate.yml
     echo 'http.proxy.host:localhost' | sudo tee -a /crate/config/crate.yml
     echo 'http.proxy.port:1055' | sudo tee -a /crate/config/crate.yml
@@ -370,8 +370,8 @@ if [ "$NODETYPE" = "head" ]; then
 
 
 
-  ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10001 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address 100.100.34.79 --node-name $HOSTNAME #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
-  #ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
+  ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10001 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address 100.100.34.79 --node-name $(hostname -s) #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
+  #ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
   sudo tailscale funnel --bg --https 443 http://localhost:8265
   sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
  # sudo tailscale funnel --bg --tcp 6379 tcp://localhost:6379 #not used anymore.
@@ -388,7 +388,7 @@ if [ "$NODETYPE" = "head" ]; then
 #   echo "search chimp-beta.ts.net" | sudo tee -a /etc/resolv.conf
 #   # #There isn't a tun so we can't create a tunnel interface. So we've told cratedb to use eth0.
 #   sudo sed -i "s/_tailscale0_/_eth0_/g" /crate/config/crate.yml
-#   ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $IPADDRESS --node-name $HOSTNAME.chimp-beta.ts.net #--object-store-memory=$ray_object_store
+#   ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $IPADDRESS --node-name $(hostname -s).chimp-beta.ts.net #--object-store-memory=$ray_object_store
 
 
 elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
@@ -398,7 +398,7 @@ elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
   discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
 
   sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
-  ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net #--object-store-memory=$ray_object_store
+  ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net #--object-store-memory=$ray_object_store
 
 
 elif [ "$NODETYPE" = "user" ]; then
@@ -415,7 +415,7 @@ elif [ "$NODETYPE" = "user" ]; then
   sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
   #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
 
-  ray start --address='100.100.34.79:6379' --num-cpus=1 --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net &
+  ray start --address='100.100.34.79:6379' --num-cpus=1 --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net &
 
   if [ -e "/files" ]; then
     sudo chgrp -R crate /files
@@ -439,11 +439,11 @@ elif [ "$NODETYPE" = "user" ]; then
 else
 
     # if [ ! "$LOCATION" = "OnPrem" ] && [ $ALL_PROXY ]; then
-    #  ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net
+    #  ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net
     #   #ssh -N -L localhost:6379:localhost:1055 $USER@localhost
     # else
     sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
-    ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net
+    ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net
     # fi
     echo "Done"
     #sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
@@ -470,7 +470,7 @@ function term_handler(){
     #if [ $(tailscale status -json | jq -r .BackendState | grep -q "Running") ]; then
     if [ $crate_pid ]; then
       echo "Running Cluster Decommission"
-      /usr/local/bin/crash --hosts ${CLUSTERHOSTS} -c "ALTER CLUSTER DECOMMISSION '"$HOSTNAME"';" &
+      /usr/local/bin/crash --hosts ${CLUSTERHOSTS} -c "ALTER CLUSTER DECOMMISSION '"$(hostname -s)"';" &
     fi
 
     if [ $(ray list nodes -f NODE_NAME="${HOSTNAME}.chimp-beta.ts.net" -f STATE=ALIVE | grep -q "ALIVE") ]; then
@@ -504,7 +504,7 @@ function error_handler(){
     #echo "Running Cluster Election"
     #/usr/local/bin/crash --hosts ${CLUSTERHOSTS} -c "SET GLOBAL TRANSIENT 'cluster.routing.allocation.enable' = 'new_primaries';" &
     echo "Running Decommission"
-    /usr/local/bin/crash --hosts ${CLUSTERHOSTS} -c "ALTER CLUSTER DECOMMISSION '"$HOSTNAME"';" &
+    /usr/local/bin/crash --hosts ${CLUSTERHOSTS} -c "ALTER CLUSTER DECOMMISSION '"$(hostname -s)"';" &
 
     echo "tailscale logout"
     sudo tailscale logout
