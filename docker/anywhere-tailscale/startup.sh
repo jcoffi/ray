@@ -38,6 +38,7 @@ export IPADDRESS=$IPADDRESS
 
 
 #echo "export NUMEXPR_MAX_THREADS='$(nproc)'" | sudo tee -a ~/.bashrc
+#echo "export OMP_NUM_THREADS='$(nproc)'" | sudo tee -a ~/.bashrc
 echo "export MAKEFLAGS='-j$(nproc)'" | sudo tee -a ~/.bashrc
 echo "export CPU_COUNT='$(nproc)'" | sudo tee -a ~/.bashrc
 
@@ -442,7 +443,7 @@ else
     #   #ssh -N -L localhost:6379:localhost:1055 $USER@localhost
     # else
     sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
-    ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net
+    ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --node-ip-address $HOSTNAME.chimp-beta.ts.net --node-name $HOSTNAME.chimp-beta.ts.net
     # fi
     echo "Done"
     #sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
