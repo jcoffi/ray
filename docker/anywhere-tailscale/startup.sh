@@ -37,8 +37,12 @@ IPADDRESS=$(curl -s http://ifconfig.me/ip)
 export IPADDRESS=$IPADDRESS
 
 
-#echo "export NUMEXPR_MAX_THREADS='$(nproc)'" | sudo tee -a ~/.bashrc
-#echo "export OMP_NUM_THREADS='$(nproc)'" | sudo tee -a ~/.bashrc
+#settings number of cpus for optimial (local) speed
+echo "export OMP_NUM_THREADS=1" | sudo tee -a ~/.bashrc
+echo "export MKL_NUM_THREADS=1" | sudo tee -a ~/.bashrc
+echo "export OPENBLAS_NUM_THREADS=1" | sudo tee -a ~/.bashrc
+echo "export NUMEXPR_NUM_THREADS=1" | sudo tee -a ~/.bashrc
+echo "export BLIS_NUM_THREADS=1" | sudo tee -a ~/.bashrc
 echo "export MAKEFLAGS='-j$(nproc)'" | sudo tee -a ~/.bashrc
 echo "export CPU_COUNT='$(nproc)'" | sudo tee -a ~/.bashrc
 
@@ -53,8 +57,6 @@ shm_memory=$(echo "scale=0; $gb_memory / 1" | bc)
 ray_object_store=$(echo "scale=0; $memory * 1024 * .40 / 1" | bc)
 
 
-#settings number of cpus for optimial (local) speed
-export NUMEXPR_MAX_THREADS="1"
 #used by conda to specify cpus for building packages
 export MAKEFLAGS="-j$(nproc)"
 #used by conda
