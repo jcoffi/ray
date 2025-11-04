@@ -374,11 +374,16 @@ if [ "$NODETYPE" = "head" ]; then
 
   ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10001 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address 100.100.34.79 --node-name $(hostname -s) #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
   #ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
+
+  # Ray dashboard (HTTP) on localhost:8265 → publicly on external port 443
   sudo tailscale funnel --bg --https 443 http://localhost:8265
-  sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
- # sudo tailscale funnel --bg --tcp 6379 tcp://localhost:6379 #not used anymore.
-  sudo tailscale funnel --bg --tcp 10001 tcp://localhost:10001
-  #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
+  
+  # Another service (HTTP) on localhost:4200 if you still have this
+  sudo tailscale funnel --bg --https 8443 http://localhost:4200
+  
+  # Ray client protocol on localhost:10001 → publicly on external port 10000
+  sudo tailscale funnel --bg --tcp 10000 tcp://localhost:10001
+
 
 
 # elif [ "$LOCATION" = "Vast" ]; then
