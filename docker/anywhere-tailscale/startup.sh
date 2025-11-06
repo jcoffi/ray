@@ -494,12 +494,12 @@ function term_handler(){
     if [ $crate_pid ]; then
         sudo kill -TERM $crate_pid
     fi
-    if [ $davfs2_pid ]; then
-        #sudo umount /data/tailscale/drive
-        sudo kill -TERM $davfs2_pid
-    # else
-        #sudo rm -f /var/run/mount.davfs/data-tailscale-drive.pid
-    fi
+    # if [ $davfs2_pid ]; then
+    #     #sudo umount /data/tailscale/drive
+    #     sudo kill -TERM $davfs2_pid
+    # # else
+    #     #sudo rm -f /var/run/mount.davfs/data-tailscale-drive.pid
+    # fi
     #fi
     exit 0
 }
