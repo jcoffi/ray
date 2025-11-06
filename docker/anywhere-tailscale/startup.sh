@@ -458,9 +458,9 @@ else
 fi
 
 # sudo sudo apt install -yq --no-install-recommends davfs2
-sudo rm -f /var/run/mount.davfs/data-tailscale-drive.pid
-sudo mkdir -pv /data/tailscale/drive
-echo -e '\n\n' | sudo mount -t davfs http://100.100.100.100:8080/jcoffi.github/ /data/tailscale/drive -o uid=1000,gid=crate,suid,user=ray,username=ray
+#sudo rm -f /var/run/mount.davfs/data-tailscale-drive.pid
+#sudo mkdir -pv /data/tailscale/drive
+#echo -e '\n\n' | sudo mount -t davfs http://100.100.100.100:8080/jcoffi.github/ /data/tailscale/drive -o uid=1000,gid=crate,suid,user=ray,username=ray
 
 
 
@@ -495,10 +495,10 @@ function term_handler(){
         sudo kill -TERM $crate_pid
     fi
     if [ $davfs2_pid ]; then
-        sudo umount /data/tailscale/drive
+        #sudo umount /data/tailscale/drive
         sudo kill -TERM $davfs2_pid
     else
-        sudo rm -f /var/run/mount.davfs/data-tailscale-drive.pid
+        #sudo rm -f /var/run/mount.davfs/data-tailscale-drive.pid
     fi
     #fi
     exit 0
@@ -518,15 +518,15 @@ function error_handler(){
     sudo tailscale down
     sudo tailscaled -cleanup
     crate_pid=$(pgrep -f crate)
-    davfs2_pid=$(pgrep -f davfs)
+    # davfs2_pid=$(pgrep -f davfs)
     sudo kill -TERM 1
 
-    if [ $davfs2_pid ]; then
-        sudo umount /data/tailscale/drive
-        sudo kill -TERM $davfs2_pid
-    else
-        sudo rm -f /var/run/mount.davfs/data-tailscale-drive.pid
-    fi
+    # if [ $davfs2_pid ]; then
+    #     sudo umount /data/tailscale/drive
+    #     sudo kill -TERM $davfs2_pid
+    # else
+    #     sudo rm -f /var/run/mount.davfs/data-tailscale-drive.pid
+    # fi
 
     if [ $crate_pid ]; then
         sudo kill -TERM $crate_pid
