@@ -288,7 +288,7 @@ else
     echo 'http.proxy.host:localhost' | sudo tee -a /crate/config/crate.yml
     echo 'http.proxy.port:1055' | sudo tee -a /crate/config/crate.yml
     #export CRATE_JAVA_OPTS="-DsocksProxyHost=localhost -DsocksProxyPort=1055 $CRATE_JAVA_OPTS"
-    export RAY_grpc_enable_http_proxy="1"
+    #export RAY_grpc_enable_http_proxy="1"
 fi
 
 
@@ -372,7 +372,7 @@ if [ "$NODETYPE" = "head" ]; then
 
 
 
-  ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10001 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address 100.100.34.79 --node-name $(hostname -s) #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
+  ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10000 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address 100.100.34.79 --node-name $(hostname -s) #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
   #ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
 
   # Ray dashboard (HTTP) on localhost:8265 → publicly on external port 443
@@ -381,8 +381,8 @@ if [ "$NODETYPE" = "head" ]; then
   # Another service (HTTP) on localhost:4200 if you still have this
   sudo tailscale funnel --bg --https 8443 http://localhost:4200
   
-  # Ray client protocol on localhost:10001 → publicly on external port 10000
-  sudo tailscale funnel --bg --tcp 10000 tcp://localhost:10001
+  # Ray client protocol on localhost:10000→ publicly on external port 10000
+  sudo tailscale funnel --bg --tcp 10000 tcp://localhost:10000
 
 
 
