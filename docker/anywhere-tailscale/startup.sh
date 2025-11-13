@@ -177,7 +177,7 @@ fi
 export $(grep "LOCATION=" /etc/environment)
 
 
-functiontodetermine_cpu() {
+function_to_determine_cpu() {
   # Check if lscpu command exists
   if command -v lscpu >/dev/null 2>&1 ; then
       # Get vendor information from lscpu output
@@ -198,7 +198,7 @@ functiontodetermine_cpu() {
 
 
 if ! grep -q "CPU_VENDOR=" /etc/environment; then
-  echo "CPU_VENDOR=$(functiontodetermine_cpu)" | sudo tee -a /etc/environment
+  echo "CPU_VENDOR=$(function_to_determine_cpu)" | sudo tee -a /etc/environment
 fi
 export $(grep "CPU_VENDOR=" /etc/environment)
 
@@ -353,10 +353,10 @@ if [ -d "$CRATE_HEAP_DUMP_PATH" ]; then
 
 	if [ -d "$CRATE_HEAP_DUMP_PATH/nodes/0/_state/" ] && [ "$(ls -A $CRATE_HEAP_DUMP_PATH/nodes/0/_state/)" ]; then
         echo "$CRATE_HEAP_DUMP_PATH/nodes/0/_state/ is not Empty"
-        crate_state_data=$true
+        crate_state_data=true
 	else
         echo "$CRATE_HEAP_DUMP_PATH/nodes/0/_state/ is Empty"
-        crate_state_data=$false
+        crate_state_data=false
 	fi
 else
 	    echo "Directory $CRATE_HEAP_DUMP_PATH not found."
@@ -537,7 +537,6 @@ function error_handler(){
 
 # Setup signal handlers
 trap 'term_handler' SIGTERM
-trap 'term_handler' SIGKILL
 trap 'term_handler' EXIT
 trap 'error_handler' ERR
 trap 'error_handler' SIGSEGV
