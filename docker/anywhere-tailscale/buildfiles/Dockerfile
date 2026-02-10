@@ -79,7 +79,6 @@ RUN --mount=type=cache,target=/var/cache/apt sudo apt update \
 && $HOME/anaconda3/bin/pip install --no-cache-dir -U pip \
         'pandas[performance]' \
         pandas_market_calendars \
-        modin[ray] \
         sqlalchemy-cratedb \
         'dask[distributed]' \
         datetime \
