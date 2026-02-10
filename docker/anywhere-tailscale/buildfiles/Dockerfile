@@ -88,7 +88,7 @@ RUN --mount=type=cache,target=/var/cache/apt sudo apt update \
         gcsfs \
         google-cloud-storage \
         smart_open \
-        'ipywidgets>=8'\
+        'ipywidgets>=8' \
         boto3
 
 # Need to hold back numpy due to scipy version constraint
