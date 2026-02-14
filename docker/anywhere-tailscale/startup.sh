@@ -404,7 +404,7 @@ elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
   node_voting_only='-Cnode.voting_only=false \\'
   discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
 
-  sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
+  #sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
   ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net #--object-store-memory=$ray_object_store
 
 
@@ -419,7 +419,7 @@ elif [ "$NODETYPE" = "user" ]; then
 
   #sudo tailscale funnel --bg https+insecure://localhost:8888
   #enabled crate locally so that OpenHands can access it easier. Assuming that opening the ports in the container and in tailscale doesn't exclude it from tailscale
-  sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
+  #sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
   #sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
 
   ray start --address='100.100.34.79:6379' --num-cpus=1 --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net &
@@ -449,13 +449,14 @@ else
     #  ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net
     #   #ssh -N -L localhost:6379:localhost:1055 $USER@localhost
     # else
-    sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
+    #sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
     ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net
     # fi
     echo "Done"
     #sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
 
 fi
+tailscale serve --service=svc:crate-cluster --tcp=4300 tcp://localhost:4300
 
 # sudo sudo apt install -yq --no-install-recommends davfs2
 #sudo rm -f /var/run/mount.davfs/data-tailscale-drive.pid
