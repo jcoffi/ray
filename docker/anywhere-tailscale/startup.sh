@@ -225,31 +225,11 @@ fi
 # Make the GET request to the Tailscale API to retrieve the list of all devices
 # This could be updated to grab the DNS domain too to be more flexable.
 # This is used for the parameter discovery.seed.hosts in crate.yml
-function get_cluster_hosts() {
-  #TSAPIKEY=$1
+clusterhosts=$(curl -s -u "${TSAPIKEY}:" \
+  https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices \
+  | jq -r '.devices[].name | select(startswith("i-") | not)' \
+  | paste -sd "," -)
 
-  clusterhosts=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices 2>/dev/null)
-  if [ $? -ne 0 ]; then
-    echo "Error: failed to fetch list of devices from Tailscale API"
-    return 1
-  fi
-
-  clusterhosts=$(echo $clusterhosts | jq -r '.devices[].name')
-  if [ $? -ne 0 ]; then
-    echo "Error: failed to parse list of devices from Tailscale API response"
-    clusterhosts="nexus:4300"
-  fi
-
-
-  # making it a comma-separated list
-  clusterhosts="$(echo $clusterhosts | tr ' ' ',')"
-  # removing AWS instances
-  clusterhosts="$(echo $clusterhosts | sed 's/i-[^,]*,//g')"
-  # strip domain names
-  #clusterhosts="$(echo $clusterhosts | sed 's/.chimp-beta.ts.net/:4300/g')"
-
-  echo $clusterhosts
-}
 
 export CLUSTERHOSTS="$(get_cluster_hosts)"
 #export CLUSTERNODES="$(echo $CLUSTERHOSTS | sed 's/.chimp-beta.ts.net/:4300/g')"
