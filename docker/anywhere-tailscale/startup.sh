@@ -456,7 +456,7 @@ else
     #sudo tailscale funnel --bg --https 443 https+insecure://localhost:8265
 
 fi
-tailscale serve --service=svc:crate-cluster --tcp=4300 tcp://localhost:4300
+
 
 # sudo sudo apt install -yq --no-install-recommends davfs2
 #sudo rm -f /var/run/mount.davfs/data-tailscale-drive.pid
