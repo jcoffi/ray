@@ -225,14 +225,10 @@ fi
 # Make the GET request to the Tailscale API to retrieve the list of all devices
 # This could be updated to grab the DNS domain too to be more flexable.
 # This is used for the parameter discovery.seed.hosts in crate.yml
-clusterhosts=$(curl -s -u "${TSAPIKEY}:" \
+export CLUSTERHOSTS=$(curl -s -u "${TSAPIKEY}:" \
   https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices \
   | jq -r '.devices[].name | select(startswith("i-") | not)' \
   | paste -sd "," -)
-
-
-export CLUSTERHOSTS="$(get_cluster_hosts)"
-#export CLUSTERNODES="$(echo $CLUSTERHOSTS | sed 's/.chimp-beta.ts.net/:4300/g')"
 
 if [ ! -c $TS_STATEDIR ] && echo $CLUSTERHOSTS | grep -q $(hostname -s) ; then
   deviceid=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$(hostname -s)'")' | jq -r .id)
