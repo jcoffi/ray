@@ -354,13 +354,14 @@ if [ "$NODETYPE" = "head" ]; then
   # Ray dashboard (HTTP) on localhost:8265 → publicly on external port 443
   sudo tailscale funnel --bg --https 443 http://localhost:8265
   
-  # Another service (HTTP) on localhost:4200 if you still have this
+  # CrateDB service (HTTP) on localhost:4200
   sudo tailscale funnel --bg --https 8443 http://localhost:4200
   
   # Ray client protocol on localhost:10000→ publicly on external port 10000
   sudo tailscale funnel --bg --tcp 10000 tcp://localhost:10000
 
-
+  # CrateDB's PostgreSQL Layer
+  sudo tailscale funnel --bg --tcp 5432 tcp://localhost:5432
 
 # elif [ "$LOCATION" = "Vast" ]; then
 #   node_master='-Cnode.master=false \\'
