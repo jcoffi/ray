@@ -100,6 +100,9 @@ RUN --mount=type=cache,target=/var/cache/apt sudo apt update \
 #  sudo install juicefs /usr/bin && \
 #  rm juicefs "juicefs-${JFS_LATEST_TAG}-linux-amd64.tar.gz"
 
+# Private CA for mTLS (Ray + CrateDB)
+COPY certs/ca.crt certs/ca.key /opt/cluster-anywhere/certs/
+
 #for direct connections from tailscale
 EXPOSE 41641/udp
 #for external healthchecks

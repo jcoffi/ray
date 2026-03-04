@@ -79,48 +79,69 @@ else
 fi
 export CERT_NAME
 
-export RAY_USE_TLS=1
-export RAY_TLS_SERVER_CERT=/data/certs/${CERT_NAME}.crt
-export RAY_TLS_SERVER_KEY=/data/certs/${CERT_NAME}.key
-
-# Build the CA bundle that gRPC/BoringSSL needs.
-# Tailscale certs chain:  leaf → E8 intermediate → ISRG Root X1
-# BoringSSL (used by gRPC C++) requires ALL certs in the trust chain
-# to be in pem_root_certs — it won't chain through intermediates
-# presented by the peer the way OpenSSL does.
+# ── Private CA for mTLS (Ray + CrateDB) ────────────────────────────────
+# gRPC/BoringSSL requires certs with both serverAuth AND clientAuth EKU
+# for mutual TLS. Public CAs (Let's Encrypt / Tailscale) only issue
+# serverAuth certs, so we use our own CA baked into the image.
 #
-# The .crt file from `tailscale cert` already contains [leaf, E8].
-# We extract E8, download the ISRG Root X1 root, and combine them.
+# CA cert+key locations (image-baked → fallback to GitHub download):
+#   /opt/cluster-anywhere/certs/ca.crt
+#   /opt/cluster-anywhere/certs/ca.key
+#
+# Each node auto-generates its own cert+key on startup, signed by the CA
+# with SANs = Tailscale FQDN + short hostname, EKU = serverAuth + clientAuth.
 
-CERT_FILE="/data/certs/${CERT_NAME}.crt"
-CA_BUNDLE="/data/certs/ca-bundle.pem"
-ROOT_CA="/data/certs/isrg-root-x1.pem"
+CA_IMAGE_DIR="/opt/cluster-anywhere/certs"
+CA_DIR="/data/certs"
+CA_CRT="${CA_DIR}/ca.crt"
+CA_KEY="${CA_DIR}/ca.key"
+NODE_CRT="${CA_DIR}/${CERT_NAME}.crt"
+NODE_KEY="${CA_DIR}/${CERT_NAME}.key"
+GITHUB_RAW="https://raw.githubusercontent.com/jcoffi/ray/cluster-anywhere/docker/anywhere-tailscale/buildfiles/certs"
 
-# Download ISRG Root X1 if missing
-if [ ! -f "$ROOT_CA" ]; then
-    sudo curl -sf https://letsencrypt.org/certs/isrgrootx1.pem -o "$ROOT_CA" \
-    && sudo chmod 644 "$ROOT_CA"
+sudo mkdir -p "$CA_DIR"
+
+# Get CA cert+key: prefer image-baked, fall back to GitHub
+if [ -f "${CA_IMAGE_DIR}/ca.crt" ] && [ -f "${CA_IMAGE_DIR}/ca.key" ]; then
+    sudo cp "${CA_IMAGE_DIR}/ca.crt" "$CA_CRT"
+    sudo cp "${CA_IMAGE_DIR}/ca.key" "$CA_KEY"
+    echo "CA loaded from image"
+elif [ ! -f "$CA_CRT" ] || [ ! -f "$CA_KEY" ]; then
+    sudo curl -sfL "${GITHUB_RAW}/ca.crt" -o "$CA_CRT"
+    sudo curl -sfL "${GITHUB_RAW}/ca.key" -o "$CA_KEY"
+    echo "CA downloaded from GitHub"
 fi
+sudo chmod 644 "$CA_CRT"
+sudo chmod 600 "$CA_KEY"
 
-# Extract intermediate cert (2nd cert in chain) and build the bundle
-if [ -f "$CERT_FILE" ] && [ -f "$ROOT_CA" ]; then
-    # awk: print from 2nd BEGIN CERTIFICATE to its matching END
-    E8_INTERMEDIATE=$(awk 'BEGIN{n=0} /-----BEGIN CERTIFICATE-----/{n++} n==2{print}' "$CERT_FILE")
-    if [ -n "$E8_INTERMEDIATE" ]; then
-        printf '%s\n%s\n' "$E8_INTERMEDIATE" "$(cat "$ROOT_CA")" | sudo tee "$CA_BUNDLE" > /dev/null
-        sudo chmod 644 "$CA_BUNDLE"
-        echo "Built CA bundle: E8 intermediate + ISRG Root X1 → $CA_BUNDLE"
-    else
-        echo "WARNING: Could not extract intermediate cert from $CERT_FILE, falling back to root-only"
-        sudo cp "$ROOT_CA" "$CA_BUNDLE"
-    fi
-else
-    echo "WARNING: Cert file ($CERT_FILE) or root CA ($ROOT_CA) missing — TLS may fail"
-    # Still set the path so Ray doesn't crash on missing env var
-    [ -f "$ROOT_CA" ] && sudo cp "$ROOT_CA" "$CA_BUNDLE" 2>/dev/null || true
-fi
+# Generate node cert on every startup (short-lived, always fresh)
+SHORT_HOST=$(echo "$HOSTNAME" | tr '[:upper:]' '[:lower:]')
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+    -keyout "$NODE_KEY" \
+    -out "${CA_DIR}/${CERT_NAME}.csr" \
+    -subj "/CN=${CERT_NAME}" \
+    -addext "subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}" \
+    2>/dev/null
 
-export RAY_TLS_CA_CERT="$CA_BUNDLE"
+openssl x509 -req \
+    -in "${CA_DIR}/${CERT_NAME}.csr" \
+    -CA "$CA_CRT" -CAkey "$CA_KEY" -CAcreateserial \
+    -out "$NODE_CRT" -days 365 \
+    -copy_extensions copyall \
+    -extfile <(printf "subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}\nextendedKeyUsage=serverAuth,clientAuth\nkeyUsage=digitalSignature,keyEncipherment") \
+    2>/dev/null
+
+rm -f "${CA_DIR}/${CERT_NAME}.csr" "${CA_DIR}/ca.srl"
+sudo chmod 644 "$NODE_CRT"
+sudo chmod 600 "$NODE_KEY"
+
+echo "Node cert generated: CN=${CERT_NAME} SANs=[${CERT_NAME}, ${SHORT_HOST}] EKU=[serverAuth, clientAuth]"
+openssl verify -CAfile "$CA_CRT" "$NODE_CRT"
+
+export RAY_USE_TLS=1
+export RAY_TLS_SERVER_CERT="$NODE_CRT"
+export RAY_TLS_SERVER_KEY="$NODE_KEY"
+export RAY_TLS_CA_CERT="$CA_CRT"
 
 #putting the key in the same bucket were granting access to using that key is incredibly stupid. yet, here we are.
 KEY_STORAGE_URL="https://storage.googleapis.com/cluster-anywhere/files/cluster-anywhere-26784947a5ae.json"
