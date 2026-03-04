@@ -342,9 +342,9 @@ fi
 
 if [ "$NODETYPE" = "head" ]; then
   echo "$NODETYPE"
-  node_name='-Cnode.name=nexus \\'
-  node_master='-Cnode.master=true \\'
-  node_data='-Cnode.data=false \\'
+  node_name='-Cnode.name=nexus'
+  node_master='-Cnode.master=true'
+  node_data='-Cnode.data=true'
 
 
 
@@ -376,10 +376,9 @@ if [ "$NODETYPE" = "head" ]; then
 
 
 elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
-  node_master='-Cnode.master=false \\'
-  node_data='-Cnode.data=true \\'
-  node_voting_only='-Cnode.voting_only=false \\'
-  discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
+  node_master='-Cnode.master=false'
+  node_data='-Cnode.data=true'
+  node_voting_only='-Cnode.voting_only=false'
 
   #sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
   ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net #--object-store-memory=$ray_object_store
@@ -387,10 +386,9 @@ elif [ ! "$LOCATION" = "OnPrem" ] && [ ! "$NODETYPE" = "head" ]; then
 
 elif [ "$NODETYPE" = "user" ]; then
   #these should be reenabled again once i have a few more cluster nodes 19/9/2025
-  node_master='-Cnode.master=false \\'
-  node_data='-Cnode.data=false \\'
-  node_voting_only='-Cnode.voting_only=false \\'
-  discovery_zen_minimum_master_nodes='-Cdiscovery.zen.minimum_master_nodes=3 \\'
+  node_master='-Cnode.master=false'
+  node_data='-Cnode.data=false'
+  node_voting_only='-Cnode.voting_only=false'
 
   #todo: https://docs.ray.io/en/latest/ray-core/using-ray-with-jupyter.html#setting-up-notebook
 
@@ -426,7 +424,12 @@ else
     #  ray start --address='nexus:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --disable-usage-stats --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net
     #   #ssh -N -L localhost:6379:localhost:1055 $USER@localhost
     # else
+
     #sudo tailscale funnel --bg --tcp 4200 tcp://localhost:4200
+
+    node_master='-Cnode.master=true'
+    node_data='-Cnode.data=true'
+    
     ray start --address='100.100.34.79:6379' --resources='{"'"$LOCATION"'": '$(nproc)'}' --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net
     # fi
     echo "Done"
@@ -520,14 +523,13 @@ trap 'error_handler' ERR
 trap 'error_handler' SIGSEGV
 
 /crate/bin/crate \
-            ${cluster_initial_master_nodes}
-            ${discovery_zen_minimum_master_nodes}
-            ${discovery_seed_hosts}
-            ${node_name}
-            ${node_master}
-            ${node_data}
-            ${node_voting_only}
-            ${node_store_allow_mmap}
+  ${cluster_initial_master_nodes} \
+  ${discovery_seed_hosts} \
+  ${node_name} \
+  ${node_master} \
+  ${node_data} \
+  ${node_voting_only} \
+  ${node_store_allow_mmap}
 
 
 #/usr/local/bin/crash --hosts ${CLUSTERHOSTS} -c "SET GLOBAL TRANSIENT 'cluster.routing.allocation.enable' = 'all';" &
