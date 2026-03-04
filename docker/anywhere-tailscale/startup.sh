@@ -115,25 +115,25 @@ sudo chmod 644 "$CA_CRT"
 sudo chmod 600 "$CA_KEY"
 
 # Generate node cert on every startup (short-lived, always fresh)
+# NOTE: sudo required — CA key is root:600 for security, ray user needs it to sign
 SHORT_HOST=$(echo "$HOSTNAME" | tr '[:upper:]' '[:lower:]')
-openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+sudo openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
     -keyout "$NODE_KEY" \
     -out "${CA_DIR}/${CERT_NAME}.csr" \
     -subj "/CN=${CERT_NAME}" \
-    -addext "subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}" \
-    2>/dev/null
+    -addext "subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}"
 
-openssl x509 -req \
+sudo openssl x509 -req \
     -in "${CA_DIR}/${CERT_NAME}.csr" \
     -CA "$CA_CRT" -CAkey "$CA_KEY" -CAcreateserial \
     -out "$NODE_CRT" -days 365 \
     -copy_extensions copyall \
-    -extfile <(printf "subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}\nextendedKeyUsage=serverAuth,clientAuth\nkeyUsage=digitalSignature,keyEncipherment") \
-    2>/dev/null
+    -extfile <(printf "subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}\nextendedKeyUsage=serverAuth,clientAuth\nkeyUsage=digitalSignature,keyEncipherment")
 
-rm -f "${CA_DIR}/${CERT_NAME}.csr" "${CA_DIR}/ca.srl"
+sudo rm -f "${CA_DIR}/${CERT_NAME}.csr" "${CA_DIR}/ca.srl"
 sudo chmod 644 "$NODE_CRT"
-sudo chmod 600 "$NODE_KEY"
+sudo chmod 644 "$NODE_KEY"
+sudo chown ray:crate "$NODE_CRT" "$NODE_KEY"
 
 echo "Node cert generated: CN=${CERT_NAME} SANs=[${CERT_NAME}, ${SHORT_HOST}] EKU=[serverAuth, clientAuth]"
 openssl verify -CAfile "$CA_CRT" "$NODE_CRT"
