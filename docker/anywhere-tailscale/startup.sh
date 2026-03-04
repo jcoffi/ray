@@ -210,10 +210,12 @@ if [ -d "$TS_STATEDIR/certs/" ] && [ ! -e "/data/certs" ]; then
   cd ~
   # add in code to search and remove the machine name from tailscale if it already exists
   deviceid=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$(hostname -s)'")' | jq -r .id)
-  export deviceid=$deviceid
+  if [ $deviceid ]; then
+    export deviceid=$deviceid
 
-  echo "Deleting the device from Tailscale"
-  curl -s -X DELETE https://api.tailscale.com/api/v2/device/$deviceid -u $TSAPIKEY: || echo "Error deleting $deviceid"
+    echo "Deleting the device from Tailscale"
+    curl -s -X DELETE https://api.tailscale.com/api/v2/device/$deviceid -u $TSAPIKEY: || echo "Error deleting $deviceid"
+  fi
 fi
 
 
@@ -232,10 +234,12 @@ export CLUSTERHOSTS=$(curl -s -u "${TSAPIKEY}:" \
 
 if [ ! -c $TS_STATEDIR ] && echo $CLUSTERHOSTS | grep -q $(hostname -s) ; then
   deviceid=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$(hostname -s)'")' | jq -r .id)
-  export deviceid=$deviceid
+  if [ $deviceid ]; then
+    export deviceid=$deviceid
 
-  echo "Deleting the device from Tailscale"
-  curl -s -X DELETE https://api.tailscale.com/api/v2/device/$deviceid -u $TSAPIKEY: || echo "Error deleting $deviceid"
+    echo "Deleting the device from Tailscale"
+    curl -s -X DELETE https://api.tailscale.com/api/v2/device/$deviceid -u $TSAPIKEY: || echo "Error deleting $deviceid"
+  fi
 fi
 
 
