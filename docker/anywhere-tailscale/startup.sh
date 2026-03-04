@@ -83,9 +83,44 @@ export RAY_USE_TLS=1
 export RAY_TLS_SERVER_CERT=/data/certs/${CERT_NAME}.crt
 export RAY_TLS_SERVER_KEY=/data/certs/${CERT_NAME}.key
 
-sudo curl -s https://letsencrypt.org/certs/isrgrootx1.pem -o /data/certs/isrg-root-x1.pem \
-&& sudo chmod 644 /data/certs/isrg-root-x1.pem
-export RAY_TLS_CA_CERT=/data/certs/isrg-root-x1.pem
+# Build the CA bundle that gRPC/BoringSSL needs.
+# Tailscale certs chain:  leaf → E8 intermediate → ISRG Root X1
+# BoringSSL (used by gRPC C++) requires ALL certs in the trust chain
+# to be in pem_root_certs — it won't chain through intermediates
+# presented by the peer the way OpenSSL does.
+#
+# The .crt file from `tailscale cert` already contains [leaf, E8].
+# We extract E8, download the ISRG Root X1 root, and combine them.
+
+CERT_FILE="/data/certs/${CERT_NAME}.crt"
+CA_BUNDLE="/data/certs/ca-bundle.pem"
+ROOT_CA="/data/certs/isrg-root-x1.pem"
+
+# Download ISRG Root X1 if missing
+if [ ! -f "$ROOT_CA" ]; then
+    sudo curl -sf https://letsencrypt.org/certs/isrgrootx1.pem -o "$ROOT_CA" \
+    && sudo chmod 644 "$ROOT_CA"
+fi
+
+# Extract intermediate cert (2nd cert in chain) and build the bundle
+if [ -f "$CERT_FILE" ] && [ -f "$ROOT_CA" ]; then
+    # awk: print from 2nd BEGIN CERTIFICATE to its matching END
+    E8_INTERMEDIATE=$(awk 'BEGIN{n=0} /-----BEGIN CERTIFICATE-----/{n++} n==2{print}' "$CERT_FILE")
+    if [ -n "$E8_INTERMEDIATE" ]; then
+        printf '%s\n%s\n' "$E8_INTERMEDIATE" "$(cat "$ROOT_CA")" | sudo tee "$CA_BUNDLE" > /dev/null
+        sudo chmod 644 "$CA_BUNDLE"
+        echo "Built CA bundle: E8 intermediate + ISRG Root X1 → $CA_BUNDLE"
+    else
+        echo "WARNING: Could not extract intermediate cert from $CERT_FILE, falling back to root-only"
+        sudo cp "$ROOT_CA" "$CA_BUNDLE"
+    fi
+else
+    echo "WARNING: Cert file ($CERT_FILE) or root CA ($ROOT_CA) missing — TLS may fail"
+    # Still set the path so Ray doesn't crash on missing env var
+    [ -f "$ROOT_CA" ] && sudo cp "$ROOT_CA" "$CA_BUNDLE" 2>/dev/null || true
+fi
+
+export RAY_TLS_CA_CERT="$CA_BUNDLE"
 
 #putting the key in the same bucket were granting access to using that key is incredibly stupid. yet, here we are.
 KEY_STORAGE_URL="https://storage.googleapis.com/cluster-anywhere/files/cluster-anywhere-26784947a5ae.json"
