@@ -71,16 +71,21 @@ export CRATE_HEAP_SIZE="${shm_memory}G"
 export shm_memory="${shm_memory}G"
 export ray_object_store=${ray_object_store}
 
-#Disabled the TLS for ray because it requires the port in the cert name.
-export RAY_USE_TLS=1
-export RAY_TLS_SERVER_CERT=/data/certs/${HOSTNAME,,}.chimp-beta.ts.net.crt
-export RAY_TLS_SERVER_KEY=/data/certs/${HOSTNAME,,}.chimp-beta.ts.net.key
+# Derive cert base name (handles both short and FQDN hostnames)
+if [[ "${HOSTNAME,,}" == *.chimp-beta.ts.net ]]; then
+    CERT_NAME="${HOSTNAME,,}"
+else
+    CERT_NAME="${HOSTNAME,,}.chimp-beta.ts.net"
+fi
+export CERT_NAME
 
-#if [ ! -f /data/certs/lets-encrypt-r3.crt ]; then
-sudo curl -s https://letsencrypt.org/certs/lets-encrypt-r3.pem -o /data/certs/lets-encrypt-r3.crt \
-&& sudo chmod 777 /data/certs/lets-encrypt-r3.crt
-#fi
-export RAY_TLS_CA_CERT=/data/certs/lets-encrypt-r3.crt
+export RAY_USE_TLS=1
+export RAY_TLS_SERVER_CERT=/data/certs/${CERT_NAME}.crt
+export RAY_TLS_SERVER_KEY=/data/certs/${CERT_NAME}.key
+
+sudo curl -s https://letsencrypt.org/certs/isrgrootx1.pem -o /data/certs/isrg-root-x1.pem \
+&& sudo chmod 644 /data/certs/isrg-root-x1.pem
+export RAY_TLS_CA_CERT=/data/certs/isrg-root-x1.pem
 
 #putting the key in the same bucket were granting access to using that key is incredibly stupid. yet, here we are.
 KEY_STORAGE_URL="https://storage.googleapis.com/cluster-anywhere/files/cluster-anywhere-26784947a5ae.json"
@@ -273,7 +278,7 @@ fi
 
 
 
-# lcase_hostname=${HOSTNAME,,}.chimp-beta.ts.net
+# lcase_hostname=${CERT_NAME}
 # #create cert
 
 # if [ ! -f /data/certs/$lcase_hostname.key ]; then
@@ -299,8 +304,7 @@ fi
 #     sudo rm -rf /data/certs/truststore.jks
 #     cd /data/certs
 #     sudo -E /crate/jdk/bin/keytool -importkeystore -destkeystore /data/certs/keystore.jks -srckeystore /data/certs/keystore.p12 -srcstoretype pkcs12 -alias $lcase_hostname -srcstorepass $KEYSTOREPASSWORD -deststorepass $KEYSTOREPASSWORD
-#     wget -nc https://letsencrypt.org/certs/lets-encrypt-r3.pem
-#     sudo -E /crate/jdk/bin/keytool -importcert -alias letsencryptint -keystore /data/certs/truststore.jks -file /data/certs/lets-encrypt-r3.pem -trustcacerts -storepass $KEYSTOREPASSWORD
+#     sudo -E /crate/jdk/bin/keytool -importcert -alias isrgrootx1 -keystore /data/certs/truststore.jks -file /data/certs/isrg-root-x1.pem -trustcacerts -storepass $KEYSTOREPASSWORD -noprompt
 #     cd $HOME
 # fi
 
@@ -418,7 +422,7 @@ elif [ "$NODETYPE" = "user" ]; then
   #export JUPYTERLAB_SETTINGS_DIR='/data/.jupyter/lab/user-settings/'
   #export JUPYTERLAB_WORKSPACES_DIR='/data/.jupyter/lab/workspaces/'
   #conda install --strict-channel-priority -y ipympl 'ipywidgets>=8' jupyterlab 'cudf=24.12' libta-lib nodejs nano ta-lib
-  #jupyter-lab --allow-root --IdentityProvider.token='' --ServerApp.password='' --notebook-dir /files --ip 0.0.0.0 --no-browser --certfile=/data/certs/${HOSTNAME,,}.chimp-beta.ts.net.crt --keyfile=/data/certs/${HOSTNAME,,}.chimp-beta.ts.net.key --preferred-dir /files &
+  #jupyter-lab --allow-root --IdentityProvider.token='' --ServerApp.password='' --notebook-dir /files --ip 0.0.0.0 --no-browser --certfile=/data/certs/${CERT_NAME}.crt --keyfile=/data/certs/${CERT_NAME}.key --preferred-dir /files &
   #look into using /lab or /admin or whatever so that they can live on the same port (on the head node perhaps)
   #but we can't move it to the head node right now because the only other port is 10001 and that conflicts with ray
   #eventually we can make the below lines available to all nodetypes for cluster health checks. but first we need to configured the instances to connect was a password when connecting remotely.
@@ -465,7 +469,7 @@ function term_handler(){
       /usr/local/bin/crash --hosts ${CLUSTERHOSTS} -c "ALTER CLUSTER DECOMMISSION '"$(hostname -s)"';" &
     fi
 
-    if [ $(ray list nodes -f NODE_NAME="${HOSTNAME}.chimp-beta.ts.net" -f STATE=ALIVE | grep -q "ALIVE") ]; then
+    if [ $(ray list nodes -f NODE_NAME="${CERT_NAME}" -f STATE=ALIVE | grep -q "ALIVE") ]; then
         echo "***Stopping Ray***"
         ray stop -g 20
     fi
