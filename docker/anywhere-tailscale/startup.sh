@@ -146,6 +146,31 @@ sudo chown ray:crate "$NODE_CRT" "$NODE_KEY"
 echo "Node cert generated: CN=${CERT_NAME} SANs=[${CERT_NAME}, ${SHORT_HOST}] EKU=[serverAuth, clientAuth]"
 openssl verify -CAfile "$CA_CRT" "$NODE_CRT"
 
+# --- CrateDB keystore/truststore ---
+KEYSTORE_PASS="cluster-anywhere"
+KEYSTORE_PATH="/data/certs/keystore.p12"
+TRUSTSTORE_PATH="/data/certs/truststore.p12"
+
+# Create PKCS12 keystore with node cert+key
+sudo openssl pkcs12 -export \
+    -in "$NODE_CRT" -inkey "$NODE_KEY" \
+    -out "$KEYSTORE_PATH" \
+    -name "node" \
+    -password "pass:${KEYSTORE_PASS}"
+
+# Create PKCS12 truststore with CA cert
+sudo keytool -importcert \
+    -file "$CA_CRT" \
+    -alias "cluster-anywhere-ca" \
+    -keystore "$TRUSTSTORE_PATH" \
+    -storetype PKCS12 \
+    -storepass "${KEYSTORE_PASS}" \
+    -noprompt 2>/dev/null
+
+sudo chmod 644 "$KEYSTORE_PATH" "$TRUSTSTORE_PATH"
+sudo chown ray:crate "$KEYSTORE_PATH" "$TRUSTSTORE_PATH"
+echo "CrateDB keystore/truststore generated"
+
 export RAY_USE_TLS=1
 export RAY_TLS_SERVER_CERT="$NODE_CRT"
 export RAY_TLS_SERVER_KEY="$NODE_KEY"
@@ -393,6 +418,10 @@ done
 
 sudo tailscale funnel reset
 
+# Expose CrateDB PSQL port as a Tailscale service
+sudo tailscale serve --bg --tcp 5432 tcp://localhost:5432
+echo "Tailscale serving TCP 5432 (CrateDB PSQL)"
+
 #current_node_master=$(crash --hosts ${CLUSTERHOSTS} -c "SELECT n.hostname FROM sys.cluster c JOIN sys.nodes n ON c.master_node = n.id;" --format raw | jq -r '.rows[] | .[0]')
 #export CURRENTNODEMASTER="$(crash --hosts ${CLUSTERHOSTS} -c "SELECT n.hostname FROM sys.cluster c JOIN sys.nodes n ON c.master_node = n.id;" --format raw | jq -r '.rows[] | .[0]')"
 
@@ -593,6 +622,33 @@ trap 'term_handler' SIGTERM
 trap 'term_handler' EXIT
 trap 'error_handler' ERR
 trap 'error_handler' SIGSEGV
+
+# --- CrateDB TLS/mTLS configuration ---
+cat >> /crate/config/crate.yml << SSLEOF
+
+# TLS/mTLS via private CA (auto-configured by startup.sh)
+ssl.keystore_filepath: /data/certs/keystore.p12
+ssl.keystore_password: cluster-anywhere
+ssl.keystore_key_password: cluster-anywhere
+ssl.truststore_filepath: /data/certs/truststore.p12
+ssl.truststore_password: cluster-anywhere
+ssl.http.enabled: true
+ssl.psql.enabled: true
+ssl.transport.mode: on
+
+auth:
+  host_based:
+    config:
+      a:
+        method: trust
+        address: 127.0.0.1/32
+      b:
+        method: trust
+        address: _local_
+      c:
+        method: cert
+SSLEOF
+echo "CrateDB TLS/mTLS config appended to crate.yml"
 
 /crate/bin/crate \
   ${cluster_initial_master_nodes} \
