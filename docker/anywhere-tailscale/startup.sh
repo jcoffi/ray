@@ -419,11 +419,77 @@ done
 
 sudo tailscale funnel reset
 
-# Register as CrateDB service host (tagged auth key provides tag:cratedb at registration)
+# Register as CrateDB service host
+# Requires tag:cratedb — provided automatically by tagged auth key,
+# or applied via API fallback using TSAPIKEY
 if [ "$NODETYPE" != "user" ]; then
-  sudo tailscale serve --service=svc:crate-cluster --bg --tcp=5432 --yes 5432
-  sudo tailscale serve --service=svc:crate-cluster --bg --tcp=4200 --yes 4200
-  echo "Tailscale service svc:crate-cluster registered (TCP 5432, 4200)"
+
+  # Check if node has tag:cratedb
+  HAS_TAG=$(tailscale status --self --json 2>/dev/null | python3 -c "
+import sys, json
+d = json.loads(sys.stdin.read())
+tags = d.get('Self', {}).get('Tags') or []
+print('yes' if 'tag:cratedb' in tags else 'no')
+" 2>/dev/null || echo "no")
+
+  # Fallback: tag via API if auth key didn't provide the tag
+  if [ "$HAS_TAG" != "yes" ] && [ -n "$TSAPIKEY" ]; then
+    echo "Node missing tag:cratedb — tagging via API fallback..."
+    python3 -c "
+import urllib.request, json, os, sys
+
+api_key = os.environ.get('TSAPIKEY', '')
+if not api_key:
+    sys.exit(1)
+
+# Find this device by hostname
+req = urllib.request.Request(
+    'https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices',
+    headers={'Authorization': 'Bearer ' + api_key})
+devices = json.loads(urllib.request.urlopen(req, timeout=10).read())
+
+import socket
+hostname = socket.gethostname()
+device_id = None
+for d in devices.get('devices', []):
+    if d.get('hostname') == hostname:
+        device_id = d['id']
+        break
+
+if not device_id:
+    print(f'Could not find device {hostname} in Tailscale')
+    sys.exit(1)
+
+# Apply tag
+req = urllib.request.Request(
+    f'https://api.tailscale.com/api/v2/device/{device_id}/tags',
+    data=json.dumps({'tags': ['tag:cratedb']}).encode(),
+    headers={'Authorization': 'Bearer ' + api_key, 'Content-Type': 'application/json'},
+    method='POST')
+urllib.request.urlopen(req, timeout=10)
+print(f'Tagged device {device_id} ({hostname}) with tag:cratedb')
+" 2>&1 || echo "API tagging failed — service registration will likely fail"
+    sleep 3  # Wait for tag propagation
+  fi
+
+  # Register service with retry (tag propagation may take a moment)
+  SVC_REGISTERED=false
+  for attempt in 1 2 3 4 5; do
+    if sudo tailscale serve --service=svc:crate-cluster --bg --tcp=5432 --yes 5432 2>/dev/null && \
+       sudo tailscale serve --service=svc:crate-cluster --bg --tcp=4200 --yes 4200 2>/dev/null; then
+      echo "Tailscale service svc:crate-cluster registered (TCP 5432, 4200)"
+      SVC_REGISTERED=true
+      break
+    else
+      echo "Service registration attempt $attempt/5 failed — retrying in 5s..."
+      sleep 5
+    fi
+  done
+
+  if [ "$SVC_REGISTERED" != "true" ]; then
+    echo "WARNING: Service registration failed after 5 attempts. Node needs tag:cratedb."
+    echo "  Use a tagged auth key in TS_AUTHKEY, or tag the device manually via Tailscale admin."
+  fi
 fi
 
 #current_node_master=$(crash --hosts ${CLUSTERHOSTS} -c "SELECT n.hostname FROM sys.cluster c JOIN sys.nodes n ON c.master_node = n.id;" --format raw | jq -r '.rows[] | .[0]')
