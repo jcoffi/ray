@@ -117,16 +117,19 @@ sudo chmod 600 "$CA_KEY"
 # Generate node cert on every startup (short-lived, always fresh)
 # NOTE: sudo required — CA key is root:600 for security, ray user needs it to sign
 SHORT_HOST=$(echo "$HOSTNAME" | tr '[:upper:]' '[:lower:]')
+# Include Tailscale Service name so TLS clients connecting via the service VIP pass hostname verification
+SVC_NAME="crate-cluster.chimp-beta.ts.net"
+SAN_LIST="DNS:${CERT_NAME},DNS:${SHORT_HOST},DNS:${SVC_NAME}"
 sudo openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
     -keyout "$NODE_KEY" \
     -out "${CA_DIR}/${CERT_NAME}.csr" \
     -subj "/CN=${CERT_NAME}" \
-    -addext "subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}"
+    -addext "subjectAltName=${SAN_LIST}"
 
 # Write extensions to temp file (process substitution doesn't work with sudo)
 EXT_FILE="/tmp/node_cert_ext.cnf"
 cat > "$EXT_FILE" << EXTEOF
-subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}
+subjectAltName=${SAN_LIST}
 extendedKeyUsage=serverAuth,clientAuth
 keyUsage=digitalSignature,keyEncipherment
 EXTEOF
@@ -143,7 +146,7 @@ sudo rm -f "${CA_DIR}/${CERT_NAME}.csr" "${CA_DIR}/ca.srl"
 sudo chmod 644 "$NODE_CRT" "$NODE_KEY"
 sudo chown ray:crate "$NODE_CRT" "$NODE_KEY"
 
-echo "Node cert generated: CN=${CERT_NAME} SANs=[${CERT_NAME}, ${SHORT_HOST}] EKU=[serverAuth, clientAuth]"
+echo "Node cert generated: CN=${CERT_NAME} SANs=[${CERT_NAME}, ${SHORT_HOST}, ${SVC_NAME}] EKU=[serverAuth, clientAuth]"
 openssl verify -CAfile "$CA_CRT" "$NODE_CRT"
 
 # --- CrateDB keystore/truststore ---
