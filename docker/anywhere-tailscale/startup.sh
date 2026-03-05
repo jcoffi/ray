@@ -329,22 +329,16 @@ export CLUSTERHOSTS=$(curl -s -u "${TSAPIKEY}:" \
   | jq -r '.devices[].name | select(startswith("i-") | not)' \
   | paste -sd "," -)
 
-if [ ! -c $TS_STATEDIR ] && echo $CLUSTERHOSTS | grep -q $(hostname -s) ; then
-  deviceid=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$(hostname -s)'")' | jq -r .id)
-  if [ $deviceid ]; then
-    export deviceid=$deviceid
-
-    echo "Deleting the device from Tailscale"
-    curl -s -X DELETE https://api.tailscale.com/api/v2/device/$deviceid -u $TSAPIKEY: || echo "Error deleting $deviceid"
-  fi
-fi
+# NOTE: Device deletion removed — persistent state directory ($TS_STATEDIR on /data)
+# handles reconnection across restarts. Deleting the device destroys API-set tags
+# (e.g. tag:cratedb) which are required for Tailscale Service registration.
 
 
 
 
 if [ -c /dev/net/tun ] || [ -c /dev/tun ]; then
     sudo tailscaled -port 41641 -statedir $TS_STATEDIR 2>/dev/null&
-    sudo tailscale up --reset --operator=ray --auth-key=$TS_AUTHKEY --accept-dns=true --accept-risk=all --accept-routes --ssh
+    sudo tailscale up --operator=ray --auth-key=$TS_AUTHKEY --accept-dns=true --accept-risk=all --accept-routes --ssh
 else
     echo "tun doesn't exist"
     sudo tailscaled -port 41641 -statedir $TS_STATEDIR -tun userspace-networking -state mem: -socks5-server=localhost:1055 -outbound-http-proxy-listen=localhost:1055 2>/dev/null&
@@ -352,7 +346,7 @@ else
     export alldevicesips=$alldevicesips
     discovery_seed_hosts="-Cdiscovery.seed_hosts=$alldevicesips \\"
     #cluster_initial_master_nodes="-Ccluster.initial_master_nodes=$alldevicesips \\"
-    sudo tailscale up --reset --operator=ray --auth-key=$TS_AUTHKEY --accept-dns=true --accept-risk=all --accept-routes --ssh
+    sudo tailscale up --operator=ray --auth-key=$TS_AUTHKEY --accept-dns=true --accept-risk=all --accept-routes --ssh
     export socks_proxy=socks5h://localhost:1055/
     export SOCKS_PROXY=socks5h://localhost:1055/
     export ALL_PROXY=socks5h://localhost:1055/
@@ -421,29 +415,43 @@ done
 
 sudo tailscale funnel reset
 
-# Tag this device as CrateDB node via API (required for service registration)
-# Retry loop needed — freshly created device may not appear in API immediately
+# Ensure this device is tagged as CrateDB node (required for service registration)
 if [ "$NODETYPE" != "user" ]; then
   MY_HOSTNAME=$(hostname -s)
-  NEW_DEVICE_ID=""
-  for attempt in 1 2 3 4 5; do
-    NEW_DEVICE_ID=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices \
-      | python3 -c "import json,sys; devices=json.load(sys.stdin).get('devices',[]); matches=[d['id'] for d in devices if d.get('hostname')=='${MY_HOSTNAME}']; print(matches[0] if matches else '')")
-    if [ -n "$NEW_DEVICE_ID" ]; then
-      break
-    fi
-    echo "Waiting for device to appear in Tailscale API (attempt ${attempt}/5)..."
-    sleep 5
-  done
 
-  if [ -n "$NEW_DEVICE_ID" ]; then
-    curl -s -X POST -H "Content-Type: application/json" \
-      -d '{"tags": ["tag:cratedb"]}' \
-      -u "${TSAPIKEY}:" \
-      "https://api.tailscale.com/api/v2/device/${NEW_DEVICE_ID}/tags"
-    echo "Tagged device ${NEW_DEVICE_ID} with tag:cratedb"
+  # Check if already tagged
+  CURRENT_TAGS=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices \
+    | python3 -c "
+import json,sys
+devices=json.load(sys.stdin).get('devices',[])
+for d in devices:
+    if d.get('hostname')=='${MY_HOSTNAME}':
+        print(','.join(d.get('tags',[])))
+        break
+")
+
+  if echo "$CURRENT_TAGS" | grep -q "tag:cratedb"; then
+    echo "Device already tagged with tag:cratedb"
   else
-    echo "WARNING: Could not find device ID for tagging after 5 attempts (hostname=${MY_HOSTNAME})"
+    # Tag via API
+    DEVICE_ID=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices \
+      | python3 -c "
+import json,sys
+devices=json.load(sys.stdin).get('devices',[])
+for d in devices:
+    if d.get('hostname')=='${MY_HOSTNAME}':
+        print(d['id'])
+        break
+")
+    if [ -n "$DEVICE_ID" ]; then
+      curl -s -X POST -H "Content-Type: application/json" \
+        -d '{"tags": ["tag:cratedb"]}' \
+        -u "${TSAPIKEY}:" \
+        "https://api.tailscale.com/api/v2/device/${DEVICE_ID}/tags"
+      echo "Tagged device ${DEVICE_ID} with tag:cratedb"
+    else
+      echo "WARNING: Could not find device ID for tagging (hostname=${MY_HOSTNAME})"
+    fi
   fi
 
   # Register as CrateDB service host
