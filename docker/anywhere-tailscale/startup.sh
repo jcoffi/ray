@@ -629,8 +629,9 @@ trap 'term_handler' EXIT
 trap 'error_handler' ERR
 trap 'error_handler' SIGSEGV
 
-# --- CrateDB TLS/mTLS configuration ---
-cat >> /crate/config/crate.yml << SSLEOF
+# --- CrateDB TLS/mTLS configuration (idempotent) ---
+if ! grep -q "ssl.keystore_filepath" /crate/config/crate.yml 2>/dev/null; then
+  cat >> /crate/config/crate.yml << SSLEOF
 
 # TLS/mTLS via private CA (auto-configured by startup.sh)
 ssl.keystore_filepath: /data/certs/keystore.p12
@@ -654,7 +655,10 @@ auth:
       c:
         method: cert
 SSLEOF
-echo "CrateDB TLS/mTLS config appended to crate.yml"
+  echo "CrateDB TLS/mTLS config appended to crate.yml"
+else
+  echo "CrateDB TLS/mTLS config already present in crate.yml — skipping"
+fi
 
 /crate/bin/crate \
   ${cluster_initial_master_nodes} \
