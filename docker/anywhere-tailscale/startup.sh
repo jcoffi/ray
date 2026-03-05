@@ -123,16 +123,24 @@ sudo openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
     -subj "/CN=${CERT_NAME}" \
     -addext "subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}"
 
+# Write extensions to temp file (process substitution doesn't work with sudo)
+EXT_FILE="/tmp/node_cert_ext.cnf"
+cat > "$EXT_FILE" << EXTEOF
+subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}
+extendedKeyUsage=serverAuth,clientAuth
+keyUsage=digitalSignature,keyEncipherment
+EXTEOF
+
 sudo openssl x509 -req \
     -in "${CA_DIR}/${CERT_NAME}.csr" \
     -CA "$CA_CRT" -CAkey "$CA_KEY" -CAcreateserial \
     -out "$NODE_CRT" -days 365 \
     -copy_extensions copyall \
-    -extfile <(printf "subjectAltName=DNS:${CERT_NAME},DNS:${SHORT_HOST}\nextendedKeyUsage=serverAuth,clientAuth\nkeyUsage=digitalSignature,keyEncipherment")
+    -extfile "$EXT_FILE"
 
+rm -f "$EXT_FILE"
 sudo rm -f "${CA_DIR}/${CERT_NAME}.csr" "${CA_DIR}/ca.srl"
-sudo chmod 644 "$NODE_CRT"
-sudo chmod 644 "$NODE_KEY"
+sudo chmod 644 "$NODE_CRT" "$NODE_KEY"
 sudo chown ray:crate "$NODE_CRT" "$NODE_KEY"
 
 echo "Node cert generated: CN=${CERT_NAME} SANs=[${CERT_NAME}, ${SHORT_HOST}] EKU=[serverAuth, clientAuth]"
