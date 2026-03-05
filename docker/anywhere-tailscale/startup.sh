@@ -342,7 +342,7 @@ fi
 
 if [ -c /dev/net/tun ] || [ -c /dev/tun ]; then
     sudo tailscaled -port 41641 -statedir $TS_STATEDIR 2>/dev/null&
-    sudo tailscale up --operator=ray --auth-key=$TS_AUTHKEY --accept-dns=true --accept-risk=all --accept-routes --ssh
+    sudo tailscale up --reset --operator=ray --auth-key=$TS_AUTHKEY --accept-dns=true --accept-risk=all --accept-routes --ssh
     # Build discovery seed hosts dynamically from Tailscale API (all devices)
     alldevicesips=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq -r '.devices[].addresses[]'| awk '/:/ {print "["$0"]"; next} 1' | paste -sd, -)
     export alldevicesips=$alldevicesips
@@ -354,7 +354,7 @@ else
     export alldevicesips=$alldevicesips
     discovery_seed_hosts="-Cdiscovery.seed_hosts=$alldevicesips \\"
     #cluster_initial_master_nodes="-Ccluster.initial_master_nodes=$alldevicesips \\"
-    sudo tailscale up --operator=ray --auth-key=$TS_AUTHKEY --accept-dns=true --accept-risk=all --accept-routes --ssh
+    sudo tailscale up --reset --operator=ray --auth-key=$TS_AUTHKEY --accept-dns=true --accept-risk=all --accept-routes --ssh
     export socks_proxy=socks5h://localhost:1055/
     export SOCKS_PROXY=socks5h://localhost:1055/
     export ALL_PROXY=socks5h://localhost:1055/
