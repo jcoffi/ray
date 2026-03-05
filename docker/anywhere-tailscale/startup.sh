@@ -418,6 +418,12 @@ done
 
 sudo tailscale funnel reset
 
+# Register as CrateDB service host (all node types except user)
+if [ "$NODETYPE" != "user" ]; then
+  sudo tailscale serve --service=svc:crate-cluster --bg --tcp=5432 --yes 5432
+  sudo tailscale serve --service=svc:crate-cluster --bg --tcp=4200 --yes 4200
+  echo "Tailscale service svc:crate-cluster registered (TCP 5432, 4200)"
+fi
 
 #current_node_master=$(crash --hosts ${CLUSTERHOSTS} -c "SELECT n.hostname FROM sys.cluster c JOIN sys.nodes n ON c.master_node = n.id;" --format raw | jq -r '.rows[] | .[0]')
 #export CURRENTNODEMASTER="$(crash --hosts ${CLUSTERHOSTS} -c "SELECT n.hostname FROM sys.cluster c JOIN sys.nodes n ON c.master_node = n.id;" --format raw | jq -r '.rows[] | .[0]')"
