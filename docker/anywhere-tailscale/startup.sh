@@ -159,7 +159,7 @@ sudo openssl pkcs12 -export \
     -password "pass:${KEYSTORE_PASS}"
 
 # Create PKCS12 truststore with CA cert
-sudo keytool -importcert \
+sudo /crate/jdk/bin/keytool -importcert \
     -file "$CA_CRT" \
     -alias "cluster-anywhere-ca" \
     -keystore "$TRUSTSTORE_PATH" \
@@ -418,9 +418,6 @@ done
 
 sudo tailscale funnel reset
 
-# Expose CrateDB PSQL port as a Tailscale service
-sudo tailscale serve --bg --tcp 5432 tcp://localhost:5432
-echo "Tailscale serving TCP 5432 (CrateDB PSQL)"
 
 #current_node_master=$(crash --hosts ${CLUSTERHOSTS} -c "SELECT n.hostname FROM sys.cluster c JOIN sys.nodes n ON c.master_node = n.id;" --format raw | jq -r '.rows[] | .[0]')
 #export CURRENTNODEMASTER="$(crash --hosts ${CLUSTERHOSTS} -c "SELECT n.hostname FROM sys.cluster c JOIN sys.nodes n ON c.master_node = n.id;" --format raw | jq -r '.rows[] | .[0]')"
