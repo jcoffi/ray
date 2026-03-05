@@ -329,12 +329,16 @@ export CLUSTERHOSTS=$(curl -s -u "${TSAPIKEY}:" \
   | jq -r '.devices[].name | select(startswith("i-") | not)' \
   | paste -sd "," -)
 
-# NOTE: Device deletion removed — persistent state directory ($TS_STATEDIR on /data)
-# handles reconnection across restarts. Deleting the device destroys API-set tags
-# (e.g. tag:cratedb) which are required for Tailscale Service registration.
-
-
-
+# Delete existing device from Tailscale to avoid duplicate names (e.g. nexus01)
+# Only on first boot — if state dir exists, tailscale up reconnects as same device
+if [ ! -d $TS_STATEDIR ] && echo $CLUSTERHOSTS | grep -q $(hostname -s) ; then
+  deviceid=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices | jq '.devices[] | select(.hostname=="'$(hostname -s)'")' | jq -r .id)
+  if [ $deviceid ]; then
+    export deviceid=$deviceid
+    echo "Deleting the device from Tailscale (first boot, no local state)"
+    curl -s -X DELETE https://api.tailscale.com/api/v2/device/$deviceid -u $TSAPIKEY: || echo "Error deleting $deviceid"
+  fi
+fi
 
 if [ -c /dev/net/tun ] || [ -c /dev/tun ]; then
     sudo tailscaled -port 41641 -statedir $TS_STATEDIR 2>/dev/null&
@@ -415,46 +419,8 @@ done
 
 sudo tailscale funnel reset
 
-# Ensure this device is tagged as CrateDB node (required for service registration)
+# Register as CrateDB service host (tagged auth key provides tag:cratedb at registration)
 if [ "$NODETYPE" != "user" ]; then
-  MY_HOSTNAME=$(hostname -s)
-
-  # Check if already tagged
-  CURRENT_TAGS=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices \
-    | python3 -c "
-import json,sys
-devices=json.load(sys.stdin).get('devices',[])
-for d in devices:
-    if d.get('hostname')=='${MY_HOSTNAME}':
-        print(','.join(d.get('tags',[])))
-        break
-")
-
-  if echo "$CURRENT_TAGS" | grep -q "tag:cratedb"; then
-    echo "Device already tagged with tag:cratedb"
-  else
-    # Tag via API
-    DEVICE_ID=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices \
-      | python3 -c "
-import json,sys
-devices=json.load(sys.stdin).get('devices',[])
-for d in devices:
-    if d.get('hostname')=='${MY_HOSTNAME}':
-        print(d['id'])
-        break
-")
-    if [ -n "$DEVICE_ID" ]; then
-      curl -s -X POST -H "Content-Type: application/json" \
-        -d '{"tags": ["tag:cratedb"]}' \
-        -u "${TSAPIKEY}:" \
-        "https://api.tailscale.com/api/v2/device/${DEVICE_ID}/tags"
-      echo "Tagged device ${DEVICE_ID} with tag:cratedb"
-    else
-      echo "WARNING: Could not find device ID for tagging (hostname=${MY_HOSTNAME})"
-    fi
-  fi
-
-  # Register as CrateDB service host
   sudo tailscale serve --service=svc:crate-cluster --bg --tcp=5432 --yes 5432
   sudo tailscale serve --service=svc:crate-cluster --bg --tcp=4200 --yes 4200
   echo "Tailscale service svc:crate-cluster registered (TCP 5432, 4200)"
