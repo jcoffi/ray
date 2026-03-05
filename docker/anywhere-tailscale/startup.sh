@@ -422,10 +422,20 @@ done
 sudo tailscale funnel reset
 
 # Tag this device as CrateDB node via API (required for service registration)
+# Retry loop needed — freshly created device may not appear in API immediately
 if [ "$NODETYPE" != "user" ]; then
   MY_HOSTNAME=$(hostname -s)
-  NEW_DEVICE_ID=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices \
-    | python3 -c "import json,sys; devices=json.load(sys.stdin).get('devices',[]); matches=[d['id'] for d in devices if d.get('hostname')=='${MY_HOSTNAME}']; print(matches[0] if matches else '')")
+  NEW_DEVICE_ID=""
+  for attempt in 1 2 3 4 5; do
+    NEW_DEVICE_ID=$(curl -s -u "${TSAPIKEY}:" https://api.tailscale.com/api/v2/tailnet/jcoffi.github/devices \
+      | python3 -c "import json,sys; devices=json.load(sys.stdin).get('devices',[]); matches=[d['id'] for d in devices if d.get('hostname')=='${MY_HOSTNAME}']; print(matches[0] if matches else '')")
+    if [ -n "$NEW_DEVICE_ID" ]; then
+      break
+    fi
+    echo "Waiting for device to appear in Tailscale API (attempt ${attempt}/5)..."
+    sleep 5
+  done
+
   if [ -n "$NEW_DEVICE_ID" ]; then
     curl -s -X POST -H "Content-Type: application/json" \
       -d '{"tags": ["tag:cratedb"]}' \
@@ -433,7 +443,7 @@ if [ "$NODETYPE" != "user" ]; then
       "https://api.tailscale.com/api/v2/device/${NEW_DEVICE_ID}/tags"
     echo "Tagged device ${NEW_DEVICE_ID} with tag:cratedb"
   else
-    echo "WARNING: Could not find device ID for tagging (hostname=${MY_HOSTNAME})"
+    echo "WARNING: Could not find device ID for tagging after 5 attempts (hostname=${MY_HOSTNAME})"
   fi
 
   # Register as CrateDB service host
