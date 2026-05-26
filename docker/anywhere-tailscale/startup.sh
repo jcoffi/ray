@@ -119,7 +119,7 @@ sudo chmod 600 "$CA_KEY"
 SHORT_HOST=$(echo "$HOSTNAME" | tr '[:upper:]' '[:lower:]')
 # Include Tailscale Service name so TLS clients connecting via the service VIP pass hostname verification
 SVC_NAME="crate-cluster.chimp-beta.ts.net"
-SAN_LIST="DNS:${CERT_NAME},DNS:${SHORT_HOST},DNS:${SVC_NAME}"
+SAN_LIST="DNS:${CERT_NAME},DNS:${SHORT_HOST},DNS:${SVC_NAME},DNS:localhost,IP:127.0.0.1"
 sudo openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
     -keyout "$NODE_KEY" \
     -out "${CA_DIR}/${CERT_NAME}.csr" \
