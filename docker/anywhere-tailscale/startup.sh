@@ -521,14 +521,16 @@ if [ "$NODETYPE" = "head" ]; then
   node_master='-Cnode.master=true'
   node_data='-Cnode.data=true'
 
-  if [ ! -d "/mnt/nfs" ] || [ ! -d "/mnt/nfs/ray-spill" ] ; then
+  if ! mountpoint -q /mnt/nfs; then
     sudo mkdir -p /mnt/nfs
+    sudo mount -t nfs na001backup.us.oneprovider.net:/mnt/storage/dtst_80634469b303186c1ec /mnt/nfs
   fi
   
-  sudo mount -t nfs na001backup.us.oneprovider.net:/mnt/storage/dtst_80634469b303186c1ec /mnt/nfs
+  
 
   if [ ! -d "/mnt/nfs/ray-spill" ] ; then
     sudo mkdir -p /mnt/nfs/ray-spill
+    sudo chown "$(id -u):$(id -g)" /mnt/nfs/ray-spill
   fi
     
   export RAY_JOB_START_TIMEOUT_SECONDS=21600
