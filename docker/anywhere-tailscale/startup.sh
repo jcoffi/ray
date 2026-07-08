@@ -521,14 +521,19 @@ if [ "$NODETYPE" = "head" ]; then
   node_master='-Cnode.master=true'
   node_data='-Cnode.data=true'
 
-  if [ ! -d "/mnt/ray-spill" ] ; then
-    sudo mkdir -p /mnt/ray-spill
+  if [ ! -d "/mnt/nfs" ] || [ ! -d "/mnt/nfs/ray-spill" ] ; then
+    sudo mkdir -p /mnt/nfs
   fi
-  sudo mount -t nfs na001backup.us.oneprovider.net:/mnt/storage/dtst_80634469b303186c1ec /mnt/ray-spill
+  
+  sudo mount -t nfs na001backup.us.oneprovider.net:/mnt/storage/dtst_80634469b303186c1ec /mnt/nfs
 
+  if [ ! -d "/mnt/nfs/ray-spill" ] ; then
+    sudo mkdir -p /mnt/nfs/ray-spill
+  fi
+    
   export RAY_JOB_START_TIMEOUT_SECONDS=21600
   
-  ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10000 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net --object-spilling-directory=/mnt/ray-spill #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
+  ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10000 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net --object-spilling-directory=/mnt/nfs/ray-spill #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
   #ray start --head --disable-usage-stats --num-cpus=0 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
 
   # Ray dashboard (HTTP) on localhost:8265 → publicly on external port 443
