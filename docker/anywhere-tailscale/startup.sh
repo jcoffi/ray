@@ -370,6 +370,18 @@ else
     #export RAY_grpc_enable_http_proxy="1"
 fi
 
+if ! mountpoint -q /mnt/nfs; then
+  sudo mkdir -p /mnt/nfs
+  sudo mount -t nfs na001backup.us.oneprovider.net:/mnt/storage/dtst_80634469b303186c1ec /mnt/nfs
+fi
+
+
+
+if mountpoint -q /mnt/nfs && [ ! -d "/mnt/nfs/ray-spill" ]; then
+  sudo mkdir -p /mnt/nfs/ray-spill
+  sudo chown "$(id -u):$(id -g)" /mnt/nfs/ray-spill
+fi
+
 
 
 # lcase_hostname=${CERT_NAME}
@@ -520,19 +532,7 @@ if [ "$NODETYPE" = "head" ]; then
   node_name='-Cnode.name=nexus'
   node_master='-Cnode.master=true'
   node_data='-Cnode.data=true'
-
-  if ! mountpoint -q /mnt/nfs; then
-    sudo mkdir -p /mnt/nfs
-    sudo mount -t nfs na001backup.us.oneprovider.net:/mnt/storage/dtst_80634469b303186c1ec /mnt/nfs
-  fi
-  
-  
-
-  if [ ! -d "/mnt/nfs/ray-spill" ] ; then
-    sudo mkdir -p /mnt/nfs/ray-spill
-    sudo chown "$(id -u):$(id -g)" /mnt/nfs/ray-spill
-  fi
-    
+   
   export RAY_JOB_START_TIMEOUT_SECONDS=21600
   
   ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10000 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net --object-spilling-directory=/mnt/nfs/ray-spill #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
