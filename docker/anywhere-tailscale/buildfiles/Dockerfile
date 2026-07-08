@@ -46,7 +46,7 @@ RUN --mount=type=cache,target=/var/cache/apt sudo apt update \
 && curl -fsSLZ https://pkgs.tailscale.com/stable/ubuntu/focal.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null \
 && curl -fsSLZ https://pkgs.tailscale.com/stable/ubuntu/focal.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list \
 && sudo apt update \
-&& sudo apt install -yq --no-install-recommends iptables nftables tailscale iproute2 procps inotify-tools debconf-utils libarchive-dev \
+&& sudo apt install -yq --no-install-recommends iptables nftables tailscale iproute2 procps inotify-tools debconf-utils libarchive-dev nfs-common \
 && echo "davfs2 davfs2/suid_file boolean true" | sudo debconf-set-selections | sudo apt install -yq --no-install-recommends davfs2 \
 && sudo mkdir -p $CRATE_HEAP_DUMP_PATH $CRATE_GC_LOG_DIR $TS_STATEDIR \
 && sudo mkdir -p /var/run/tailscale /var/cache/tailscale /var/lib/tailscale \
