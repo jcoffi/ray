@@ -521,6 +521,11 @@ if [ "$NODETYPE" = "head" ]; then
   node_master='-Cnode.master=true'
   node_data='-Cnode.data=true'
 
+  if [ ! -d "/mnt/ray-spill" ] 
+    sudo mkdir -p /mnt/ray-spill
+  fi
+  sudo mount -t nfs na001backup.us.oneprovider.net:/mnt/storage/dtst_80634469b303186c1ec /mnt/ray-spill
+
   export RAY_JOB_START_TIMEOUT_SECONDS=21600
   
   ray start --head --disable-usage-stats --num-cpus=0 --ray-client-server-port=10000 --include-dashboard=True --dashboard-host 0.0.0.0 --node-ip-address $(hostname -s).chimp-beta.ts.net --node-name $(hostname -s).chimp-beta.ts.net #--system-config='{"object_spilling_config":"{\"type\":\"smart_open\",\"params\":{\"uri\":\"gs://cluster-anywhere/ray_job_spill\"}}"}'
