@@ -370,14 +370,10 @@ else
     #export RAY_grpc_enable_http_proxy="1"
 fi
 
-if ! mountpoint -q /mnt/nfs; then
-  sudo mkdir -p /mnt/nfs
-  sudo mount -t nfs na001backup.us.oneprovider.net:/mnt/storage/dtst_80634469b303186c1ec /mnt/nfs
-fi
 
 
 
-if mountpoint -q /mnt/nfs && [ ! -d "/mnt/nfs/ray-spill" ]; then
+if [ ! -d "/mnt/nfs/ray-spill" ]; then
   sudo mkdir -p /mnt/nfs/ray-spill
   sudo chown "$(id -u):$(id -g)" /mnt/nfs/ray-spill
 fi
