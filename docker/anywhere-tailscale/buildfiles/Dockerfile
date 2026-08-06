@@ -84,11 +84,12 @@ RUN --mount=type=cache,target=/var/cache/apt sudo apt update \
         datetime \
         geojson \
         fredapi \
-        google-api-python-client \
-        gcsfs \
-        google-cloud-storage \
-        smart_open \
-        'ipywidgets>=8' \
+        scikit-learn \
+        # google-api-python-client \
+        # gcsfs \
+        # google-cloud-storage \
+        # smart_open \
+        # 'ipywidgets>=8' \
         boto3
 
 # Need to hold back numpy due to scipy version constraint
