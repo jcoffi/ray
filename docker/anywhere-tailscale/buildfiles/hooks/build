@@ -22,7 +22,7 @@ export IMAGETYPE=$DOCKER_TAG
 docker buildx build \
 --push \
 -t jcoffi/cluster-anywhere:$DOCKER_TAG \
---cache-from=rayproject/ray:latest-py310-$DOCKER_TAG \
+--cache-from=rayproject/ray:latest-py312-$DOCKER_TAG \
 --ulimit 'memlock=-1' \
 --build-arg IMAGETYPE=$DOCKER_TAG .
 
